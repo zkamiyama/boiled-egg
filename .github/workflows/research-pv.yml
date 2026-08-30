@@ -75,6 +75,8 @@ jobs:
           eval/run_tsm_benchmark.py
           eval/make_final_research_pack.py
           research/pv_reference.py
+          research/formant_reference.py
+          research/test_formant_reference.py
           research/run_pv_experiment.py
           research/run_cpp_pv_rt_experiment.py
           research/tune_cpp_pv_rt.py
@@ -82,3 +84,6 @@ jobs:
           research/run_transient_graft_experiment.py
       - name: Generated mini-dataset test
         run: python3 -m unittest -v eval/test_tsm_dataset.py
+      - name: Synthetic formant preservation tests
+        working-directory: research
+        run: python3 -m unittest -v test_formant_reference.py
