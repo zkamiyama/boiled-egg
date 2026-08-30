@@ -1,0 +1,39 @@
+name: research-multires-quality
+
+on:
+  push:
+    paths:
+      - "research/cpp_pv_rt/**"
+      - "research/test_multires_highband.py"
+      - ".github/workflows/research-multires-quality.yml"
+  pull_request:
+    paths:
+      - "research/cpp_pv_rt/**"
+      - "research/test_multires_highband.py"
+      - ".github/workflows/research-multires-quality.yml"
+
+jobs:
+  highband-modulation:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libsndfile1
+          python3 -m pip install --user -r requirements-dev.txt
+      - name: Build multi-resolution renderer
+        run: |
+          cmake -S research/cpp_pv_rt -B build/multires-quality -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/multires-quality --target boiled_egg_multires_rt_cli --parallel 2
+      - name: High-band steady-tone modulation gate
+        run: >-
+          python3 research/test_multires_highband.py
+          --cli build/multires-quality/boiled_egg_multires_rt_cli
+          --output results/multires-highband
+      - name: Archive diagnostic
+        uses: actions/upload-artifact@v4
+        with:
+          name: multires-highband-diagnostic
+          retention-days: 14
+          path: results/multires-highband/metrics.csv
