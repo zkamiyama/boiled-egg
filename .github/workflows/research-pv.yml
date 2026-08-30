@@ -83,7 +83,7 @@ jobs:
           if worst >= 0.90:
               raise SystemExit('formant callback p99 gate failed')
           PY
-      - name: Upload Linux renderer and quality reports
+      - name: Upload Linux renderer, source and quality reports
         uses: actions/upload-artifact@v4
         with:
           name: formant-linux-x64
@@ -93,6 +93,10 @@ jobs:
             build/formant/boiled_egg_pv_rt_cli
             results/formant-ci/report.json
             results/formant-callback.csv
+            research/cpp_pv_rt/**
+            research/eval_formant_pitch.py
+            research/formant_reference.py
+            research/test_formant_reference.py
 
   python-reference-formant:
     runs-on: ubuntu-24.04
