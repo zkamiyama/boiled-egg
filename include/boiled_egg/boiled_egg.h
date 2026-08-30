@@ -45,6 +45,29 @@ typedef struct boiledegg_config {
     uint32_t fifo_frames;
 } boiledegg_config;
 
+/*
+ * User-selected algorithm profile. This is a lifecycle/configuration choice,
+ * not a sample-accurate automation parameter. Recreate the handle to change it.
+ */
+typedef enum boiledegg_quality_mode {
+    BOILEDEGG_QUALITY_GENERAL = 0,
+    BOILEDEGG_QUALITY_TRANSIENT = 1,
+    BOILEDEGG_QUALITY_EFFICIENT = 2,
+    BOILEDEGG_QUALITY_MONOPHONIC = 3
+} boiledegg_quality_mode;
+
+typedef enum boiledegg_formant_mode {
+    BOILEDEGG_FORMANT_OFF = 0,
+    BOILEDEGG_FORMANT_PRESERVE = 1
+} boiledegg_formant_mode;
+
+typedef struct boiledegg_profile_config {
+    uint32_t struct_size;
+    uint32_t quality_mode;
+    uint32_t formant_mode;
+    uint32_t reserved;
+} boiledegg_profile_config;
+
 typedef enum boiledegg_parameter_id {
     BOILEDEGG_PARAMETER_TIME_RATIO = 1,
     BOILEDEGG_PARAMETER_PITCH_RATIO = 2,
@@ -89,11 +112,26 @@ typedef struct boiledegg_runtime_info {
 } boiledegg_runtime_info;
 
 BOILEDEGG_API boiledegg_config boiledegg_default_config(uint32_t sample_rate, uint32_t channels);
+BOILEDEGG_API boiledegg_profile_config boiledegg_default_profile(void);
+BOILEDEGG_API int boiledegg_profile_is_supported(const boiledegg_profile_config* profile);
 BOILEDEGG_API uint32_t boiledegg_abi_version(void);
 BOILEDEGG_API const char* boiledegg_version_string(void);
 BOILEDEGG_API const char* boiledegg_result_string(boiledegg_result result);
 
+/* Existing creation API: equivalent to boiledegg_create_ex() with default profile. */
 BOILEDEGG_API boiledegg_handle* boiledegg_create(const boiledegg_config* config, boiledegg_result* out_result);
+
+/*
+ * Explicit manual algorithm selection. General/Transient/Efficient are
+ * supported by the current product backend. Monophonic and formant-preserving
+ * profiles become supported only when their quality backends pass the product
+ * gates; until then this returns NULL with BOILEDEGG_UNSUPPORTED_MODE.
+ */
+BOILEDEGG_API boiledegg_handle* boiledegg_create_ex(
+    const boiledegg_config* config,
+    const boiledegg_profile_config* profile,
+    boiledegg_result* out_result);
+
 BOILEDEGG_API void boiledegg_destroy(boiledegg_handle* handle);
 
 /*
