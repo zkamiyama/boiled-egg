@@ -95,6 +95,7 @@ jobs:
             results/formant-callback.csv
             research/cpp_pv_rt/**
             research/eval_formant_pitch.py
+            research/eval_elastique_pitch.py
             research/formant_reference.py
             research/test_formant_reference.py
 
@@ -114,6 +115,7 @@ jobs:
           research/formant_reference.py
           research/test_formant_reference.py
           research/eval_formant_pitch.py
+          research/eval_elastique_pitch.py
       - name: Independent offline strategy regression
         working-directory: research
         run: python3 -m unittest -v test_formant_reference.py
