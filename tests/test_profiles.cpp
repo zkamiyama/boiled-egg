@@ -33,6 +33,17 @@ bool make_and_probe(uint32_t mode, uint32_t& latency) {
     return process_result == BOILEDEGG_OK;
 }
 
+bool rejected_formant_strategy(uint32_t strategy) {
+    auto config = boiledegg_default_config(48000, 2);
+    auto profile = boiledegg_default_profile();
+    profile.formant_mode = BOILEDEGG_FORMANT_PRESERVE;
+    profile.formant_strategy = strategy;
+    if (boiledegg_profile_is_supported(&profile)) return false;
+    boiledegg_result result = BOILEDEGG_OK;
+    return boiledegg_create_ex(&config, &profile, &result) == nullptr &&
+           result == BOILEDEGG_UNSUPPORTED_MODE;
+}
+
 } // namespace
 
 int main() {
@@ -40,6 +51,8 @@ int main() {
     if (default_profile.struct_size != sizeof(boiledegg_profile_config) ||
         default_profile.quality_mode != BOILEDEGG_QUALITY_GENERAL ||
         default_profile.formant_mode != BOILEDEGG_FORMANT_OFF ||
+        default_profile.formant_strategy != BOILEDEGG_FORMANT_STRATEGY_AUTO ||
+        default_profile.reserved != 0u ||
         !boiledegg_profile_is_supported(&default_profile)) return 1;
 
     uint32_t general_latency = 0, transient_latency = 0, efficient_latency = 0;
@@ -55,19 +68,23 @@ int main() {
     boiledegg_result result = BOILEDEGG_OK;
     if (boiledegg_create_ex(&config, &unsupported, &result) != nullptr || result != BOILEDEGG_UNSUPPORTED_MODE) return 7;
 
-    unsupported = boiledegg_default_profile();
-    unsupported.formant_mode = BOILEDEGG_FORMANT_PRESERVE;
-    result = BOILEDEGG_OK;
-    if (boiledegg_profile_is_supported(&unsupported) ||
-        boiledegg_create_ex(&config, &unsupported, &result) != nullptr ||
-        result != BOILEDEGG_UNSUPPORTED_MODE) return 8;
+    if (!rejected_formant_strategy(BOILEDEGG_FORMANT_STRATEGY_AUTO)) return 8;
+    if (!rejected_formant_strategy(BOILEDEGG_FORMANT_STRATEGY_HARMONIC)) return 9;
+    if (!rejected_formant_strategy(BOILEDEGG_FORMANT_STRATEGY_MONOPHONIC)) return 10;
 
     auto invalid = boiledegg_default_profile();
-    invalid.reserved = 1;
+    invalid.formant_strategy = 999u;
     result = BOILEDEGG_OK;
     if (boiledegg_profile_is_supported(&invalid) ||
         boiledegg_create_ex(&config, &invalid, &result) != nullptr ||
-        result != BOILEDEGG_INVALID_ARGUMENT) return 9;
+        result != BOILEDEGG_INVALID_ARGUMENT) return 11;
+
+    invalid = boiledegg_default_profile();
+    invalid.reserved = 1u;
+    result = BOILEDEGG_OK;
+    if (boiledegg_profile_is_supported(&invalid) ||
+        boiledegg_create_ex(&config, &invalid, &result) != nullptr ||
+        result != BOILEDEGG_INVALID_ARGUMENT) return 12;
 
     std::cout << "manual profile tests passed: general=" << general_latency
               << " transient=" << transient_latency
