@@ -2,7 +2,7 @@
 
 Linux-first research scaffold for a real-time pitch-shift + time-stretch SDK, with the long-term target of commercial-quality polyphonic processing.
 
-> **Status:** v0.1.1 DAW-foundation research baseline. Host/ABI/realtime contracts are intentionally being stabilized before the higher-quality DSP backend is promoted. This repository does **not** claim perceptual parity with zplane elastique yet.
+> **Status:** v0.1.2 DAW-foundation checkpoint. The host/ABI/realtime contract is now exercised through real CLAP and VST3 adapters; DSP quality work continues separately. This repository does **not** claim perceptual parity with zplane elastique yet.
 
 Canonical names: repository slug **`boiled-egg`**, CMake target/package **`boiled_egg`**, C++ namespace **`boiled_egg`**, and public C ABI prefix **`boiledegg_`**.
 
@@ -15,6 +15,7 @@ Canonical names: repository slug **`boiled-egg`**, CMake target/package **`boile
 - STL types, exceptions, templates and C++ implementation classes never cross the binary ABI.
 - Two processing contracts are exposed: fixed-I/O **`boiledegg_process_realtime()`** for DAW insert/pitch-shift use, and variable-rate **push/pull** for clip/source time stretching.
 - `boiledegg_get_runtime_info()` reports fixed realtime latency, tail, parameter quantum and capability flags for host adapters.
+- Backend-independent `boiledegg_parameter_state` keeps project/preset parameters separate from ephemeral DSP history.
 
 ## Current DSP baseline
 
@@ -32,17 +33,47 @@ Pitch shift is decomposed into pitch-preserving time stretch plus resampling. Th
 
 At 48 kHz the default input-side lookahead is 1152 frames (~24 ms). At 88.2/96 kHz the baseline uses a 1536-frame WSOLA window and 192-frame search radius (1728-frame / ~18 ms lookahead at 96 kHz) to keep short host blocks viable.
 
-## Realtime contract
+## Realtime and DAW contract
 
-After `boiledegg_create()`, both the variable-rate streaming hot path and fixed-I/O realtime hot path are designed to perform no heap allocation, locking, I/O, logging, exception propagation or thread creation. `boiled_egg_noalloc_test` checks both paths after warm-up. ASan/UBSan, ThreadSanitizer and randomized automation are part of the test matrix.
-
-### DAW processing and threading
+After `boiledegg_create()`, the streaming/realtime hot path, parameter-only flush and reset path are designed to perform no heap allocation, locking, I/O, logging, exception propagation or thread creation. `boiled_egg_noalloc_test`, ASan/UBSan and ThreadSanitizer cover these contracts.
 
 `boiledegg_process_realtime()` always writes exactly the host block size and introduces a fixed, block-size-independent delay reported by `boiledegg_get_runtime_info()`. The current backend treats this as a pitch-shift insert mode and requires `time_ratio == 1`; actual timeline time stretching uses the variable-rate push/pull API. Startup delay is deterministic zero padding and the reported tail equals the delay for the current finite-memory backend. Exact per-channel in-place processing is supported.
 
-Distinct `boiledegg_handle` instances are independent and may be processed concurrently on separate DAW worker/audio threads. On one instance, the DSP state machine remains single-owner and lock-free; do not call processing functions concurrently from multiple audio threads. One control/UI thread may update time/pitch parameters concurrently through lock-free atomic mailboxes. `reset` and `destroy` remain lifecycle operations and must be externally synchronized.
+Distinct `boiledegg_handle` instances are independent and may be processed concurrently on separate DAW workers. A single handle has one symbolic audio owner: processing calls must not overlap, but that owner may migrate between operating-system worker threads between calls. One control/UI thread may update parameters concurrently through lock-free atomic mailboxes. `boiledegg_reset()` is realtime-safe when serialized with processing and preserves requested parameters; `destroy` still requires lifecycle synchronization.
 
-Fixed realtime processing also accepts sorted, sample-offset parameter events so VST3/CLAP adapters do not have to discard host timestamps. The current WSOLA backend deliberately **does not** advertise `BOILEDEGG_CAP_SAMPLE_ACCURATE_AUTOMATION`; it reports a conservative `parameter_quantum_frames` instead. This keeps the ABI ready for sample-accurate backends without overstating current DSP precision. See [`docs/HOST_INTEGRATION.md`](docs/HOST_INTEGRATION.md).
+Fixed realtime processing accepts sorted, sample-offset parameter events. Zero-frame calls are supported as parameter-only host flushes, and an invalid batch is rejected before any value is published. The current WSOLA backend deliberately **does not** advertise `BOILEDEGG_CAP_SAMPLE_ACCURATE_AUTOMATION`; it reports a conservative `parameter_quantum_frames` instead. See [`docs/HOST_INTEGRATION.md`](docs/HOST_INTEGRATION.md).
+
+## CLAP and VST3 adapters
+
+The adapters are optional and keep third-party SDK headers out of the installed boiled egg SDK.
+
+### CLAP
+
+```bash
+cmake -S . -B build-clap -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBOILED_EGG_BUILD_SHARED=OFF \
+  -DBOILED_EGG_BUILD_CLAP=ON
+cmake --build build-clap
+ctest --test-dir build-clap -R boiled_egg_clap_smoke --output-on-failure
+```
+
+The build pins the official **CLAP 1.2.10** headers. CI loads the generated `.clap` through the CLAP ABI and exercises factory/create/activate, stereo processing, timestamped automation, audio-thread reset, `params.flush`, latency/tail and state save/load. The plugin statically embeds the boiled egg core and CI rejects an external `libboiled_egg` dependency.
+
+### VST3
+
+```bash
+cmake -S . -B build-vst3 -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBOILED_EGG_BUILD_SHARED=OFF \
+  -DBOILED_EGG_BUILD_VST3=ON \
+  -DBOILED_EGG_BUILD_TESTS=OFF
+cmake --build build-vst3 --target boiled_egg_vst3
+```
+
+The build pins the official **Steinberg VST3 SDK 3.8.0** commit used by CI. The SDK's `moduleinfotool` and official **VST3 validator** run during the plugin build. CI also checks that the VST3 bundle is self-contained and does not depend on an external `libboiled_egg`.
+
+Both reference adapters currently expose one stereo pitch parameter (±24 semitones) and no GUI. Their purpose is to continuously prove that the core's lifecycle, automation, state, latency/tail and threading contracts map to real plugin APIs while DSP-quality work continues.
 
 ## Build
 
@@ -120,35 +151,35 @@ python3 eval/make_blind_manifest.py results/external/systems
 
 ### Current Linux checkpoint
 
-Measured in this development container on Debian 13, GCC 14.2 / Clang 17, AMD EPYC 9V74 virtual CPU allocation:
+The v0.1.2 CI gate currently covers:
 
-- 8/8 tests pass in the current local GCC C++20 DAW-foundation checkpoint.
-- Fixed realtime host tests cover 44.1/48/96 kHz, 32/64/128/257-frame blocks, pitch automation, in-place processing, mode errors, deterministic latency and no underruns in the tested matrix.
-- ThreadSanitizer passes both parallel-instance and concurrent control/audio tests, including the fixed-I/O realtime API.
-- ASan + UBSan pass the DAW host contract test and the existing DSP regression suite.
-- Synthetic duration error: **0 frames** for the current fixed-ratio matrix.
-- 440 Hz pitch test: **220.0 Hz** at -12 st and **880.4 Hz** at +12 st (~0.79 cent error for the latter FFT measurement).
-- +12 st anti-alias regression: 14 kHz stop-band fixture is **~54.4 dB** below the 10 kHz pass-band fixture.
-- Stereo correlation error in the linked-channel fixture: about **-4.6e-7**.
-- Callback microbenchmark: the committed run peaks at **0.83x p99/deadline** over the 44.1/48/96 kHz × 32/64/128/256/512-frame × -12/0/+12 st matrix; the latest five repeated runs peaked between **0.82x and 0.83x**. At <=48 kHz the committed-run worst is about **0.38x**. These figures are machine-specific and are not a portable realtime guarantee.
+- GCC and Clang, C++20 and C++23.
+- shared and static SDK consumer builds.
+- ASan + UBSan.
+- ThreadSanitizer across parallel plugin instances, concurrent control/audio parameter updates, serial DAW worker migration and realtime reset.
+- fixed-I/O DAW tests across 44.1/48/96 kHz and 32/64/128/257-frame blocks at -12/0/+12 semitones.
+- allocation-free realtime process, reset, parameter flush and state snapshot paths.
+- CLAP 1.2.10 ABI load/process/state smoke test.
+- Steinberg VST3 SDK 3.8.0 official validator.
+- self-contained CLAP/VST3 packages with the core statically embedded.
 
-See `results/SUMMARY.md`, `results/realtime_bench.csv`, and `results/ENVIRONMENT.txt` after running `scripts/run_all.sh`.
+Previous DSP baseline measurements in the development Linux VM include zero duration error for the fixed-ratio synthetic matrix, ~0.79 cent FFT pitch error for the +12-semitone 440 Hz fixture, ~54.4 dB +12-semitone anti-alias rejection in the committed synthetic test, and a worst repeated callback p99/deadline around 0.82–0.83x for the earlier 44.1/48/96 kHz × 32–512-frame matrix. These are machine-specific research checkpoints, not portable realtime guarantees.
 
 ## External evaluation material
 
 Third-party audio is intentionally not committed. Put it under `data/external/` and run `python3 eval/inspect_corpus.py`.
 
-Recommended evaluation sources include EBU SQAM and the Roberts/Paliwal TSM subjective-quality dataset. EBU SQAM's current download page explicitly describes the lossless assessment material and limits commercial use to use as an R&D tool. Keep licensed zplane material/output local unless its licence explicitly permits redistribution.
+The Roberts/Paliwal TSM subjective-quality dataset is supported as a local evaluation corpus. The test set supplied during development contains 20 reference files and 240 processed files, including Elastique, FuzzyTSM and NMFTSM outputs with MOS labels. Licensed/reference audio remains outside git.
 
 For external algorithm baselines, `scripts/fetch_optional_baselines.sh` fetches Signalsmith Stretch and Rubber Band into a gitignored evaluation-only directory. Signalsmith Stretch is MIT; Rubber Band is GPL-2.0-or-later unless separately commercially licensed. Neither is linked into the product library.
 
 ## Resume development later
 
-Start with **`docs/RESUME.md`**. It records the current architecture, commands, constraints and the next algorithm milestones. The next major quality step is an STFT phase-vocoder backend with phase locking and transient-aware processing, followed by HPSS and formant preservation.
+Start with **`docs/RESUME.md`**. It records the current architecture, commands, constraints and next DSP milestones. With the v0.1.2 DAW foundation in place, the next major work returns to objective/listening quality against the supplied MOS/Elastique dataset: phase-vocoder phase coherence, transient handling, HPSS/hybrid selection and formant/spectral-envelope preservation.
 
 Other useful documents:
 
-- `docs/HOST_INTEGRATION.md` — DAW lifecycle, PDC/tail, automation and VST3/CLAP mapping.
+- `docs/HOST_INTEGRATION.md` — DAW lifecycle, PDC/tail, automation, state and VST3/CLAP mapping.
 - `docs/EVALUATION.md` — quality/performance matrix and listening-test plan.
 - `docs/BASELINES.md` — evaluation-only competitor integration rules.
 - `docs/LICENSING.md` — current licensing checkpoint.
