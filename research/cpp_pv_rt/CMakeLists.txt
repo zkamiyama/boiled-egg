@@ -44,3 +44,7 @@ endif()
 add_executable(boiled_egg_pv_rt_bench tests/bench.cpp)
 target_compile_features(boiled_egg_pv_rt_bench PRIVATE cxx_std_20)
 target_link_libraries(boiled_egg_pv_rt_bench PRIVATE boiled_egg_research_pv_rt)
+
+add_executable(boiled_egg_pv_rt_formant_bench tests/formant_bench.cpp)
+target_compile_features(boiled_egg_pv_rt_formant_bench PRIVATE cxx_std_20)
+target_link_libraries(boiled_egg_pv_rt_formant_bench PRIVATE boiled_egg_research_pv_rt)
