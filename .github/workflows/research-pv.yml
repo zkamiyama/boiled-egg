@@ -71,6 +71,13 @@ jobs:
           cmake --build build/formant --target boiled_egg_pv_rt_cli boiled_egg_pv_rt_formant_bench boiled_egg_pv_rt_window_bench --parallel 2
       - name: Pitch, duration, stereo and spectral-envelope regression
         run: python3 research/eval_formant_pitch.py --cli build/formant/boiled_egg_pv_rt_cli --output results/formant-ci
+      - name: Transient candidate tonal safety gate
+        run: >-
+          python3 research/test_transient_candidate.py
+          --cli build/formant/boiled_egg_pv_rt_cli
+          --output results/transient-tonal
+          --diagnostic-fft 512
+          --diagnostic-fft 2048
       - name: General callback diagnostic and gross regression gate
         run: |
           build/formant/boiled_egg_pv_rt_formant_bench > results/formant-callback.csv
@@ -120,12 +127,14 @@ jobs:
           path: |
             build/formant/boiled_egg_pv_rt_cli
             results/formant-ci/report.json
+            results/transient-tonal/metrics.csv
             results/formant-callback.csv
             results/window-callback.csv
             research/cpp_pv_rt/**
             research/eval_formant_pitch.py
             research/eval_elastique_pitch.py
             research/make_blind_pitch_pack.py
+            research/test_transient_candidate.py
             research/formant_reference.py
             research/test_formant_reference.py
 
@@ -147,6 +156,7 @@ jobs:
           research/eval_formant_pitch.py
           research/eval_elastique_pitch.py
           research/make_blind_pitch_pack.py
+          research/test_transient_candidate.py
       - name: Independent offline strategy regression
         working-directory: research
         run: python3 -m unittest -v test_formant_reference.py
