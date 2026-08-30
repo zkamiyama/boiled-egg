@@ -299,7 +299,7 @@ private:
 
         auto high_config = base;
         high_config.fft_size = 512U;
-        high_config.analysis_hop = 128U;
+        high_config.analysis_hop = 192U;
         high_ = boiledegg_research_pv_rt_create(&high_config, &result);
         if (high_ == nullptr) {
             boiledegg_research_pv_rt_destroy(low_);
@@ -308,22 +308,22 @@ private:
         }
     }
 
-    void build_filter() {
-        const double normalized = static_cast<double>(crossover_hz_) / static_cast<double>(sample_rate_);
-        const double denominator = bessel_i0(k_kaiser_beta);
+    void build_filter() noexcept {
+        const auto midpoint = static_cast<std::int64_t>(fir_half_);
+        const double cutoff = static_cast<double>(crossover_hz_) / static_cast<double>(sample_rate_);
+        const double beta_denominator = bessel_i0(k_kaiser_beta);
         double sum = 0.0;
-        for (std::uint32_t n = 0U; n < fir_taps_; ++n) {
-            const double centered = static_cast<double>(static_cast<std::int64_t>(n) - static_cast<std::int64_t>(fir_half_));
-            const double ratio = fir_half_ == 0U ? 0.0 : centered / static_cast<double>(fir_half_);
-            const double inside = std::max(0.0, 1.0 - ratio * ratio);
-            const double window = bessel_i0(k_kaiser_beta * std::sqrt(inside)) / denominator;
-            const double value = 2.0 * normalized * sinc_pi(2.0 * normalized * centered) * window;
-            lowpass_[n] = static_cast<float>(value);
-            sum += value;
+        for (std::uint32_t tap = 0U; tap < fir_taps_; ++tap) {
+            const auto offset = static_cast<std::int64_t>(tap) - midpoint;
+            const double ideal = 2.0 * cutoff * sinc_pi(2.0 * cutoff * static_cast<double>(offset));
+            const double position = fir_taps_ > 1U ? (2.0 * static_cast<double>(tap) / static_cast<double>(fir_taps_ - 1U) - 1.0) : 0.0;
+            const double window = bessel_i0(k_kaiser_beta * std::sqrt(std::max(0.0, 1.0 - position * position))) / beta_denominator;
+            lowpass_[tap] = static_cast<float>(ideal * window);
+            sum += lowpass_[tap];
         }
-        if (std::abs(sum) > 1.0e-14) {
-            const float inverse = static_cast<float>(1.0 / sum);
-            for (auto& value : lowpass_) value *= inverse;
+        if (std::abs(sum) > 1.0e-15) {
+            const float normalizer = static_cast<float>(1.0 / sum);
+            for (float& value : lowpass_) value *= normalizer;
         }
     }
 
@@ -333,76 +333,72 @@ private:
         output_queue_.reset();
         std::fill(diff_history_.begin(), diff_history_.end(), 0.0F);
         std::fill(high_history_.begin(), high_history_.end(), 0.0F);
-        history_write_ = 0U;
-        filter_samples_ = 0U;
-        input_frames_ = 0U;
+        history_position_ = 0U;
+        raw_pairs_ = 0U;
         output_frames_ = 0U;
+        input_frames_ = 0U;
         flushed_ = false;
     }
 
     boiledegg_research_pv_rt_result drain_child(
-        boiledegg_research_pv_rt_handle* child,
-        ring_buffer& destination,
+        boiledegg_research_pv_rt_handle* handle,
+        ring_buffer& queue,
         std::vector<float*>& pointers) noexcept {
-        while (boiledegg_research_pv_rt_available(child) != 0U) {
-            if (destination.free() == 0U) return BOILEDEGG_RESEARCH_PV_RT_FIFO_OVERFLOW;
-            const auto request = static_cast<std::uint32_t>(std::min<std::size_t>(
-                {static_cast<std::size_t>(boiledegg_research_pv_rt_available(child)),
-                 destination.free(), static_cast<std::size_t>(scratch_frames_)}));
-            const auto count = boiledegg_research_pv_rt_pull(child, pointers.data(), request);
-            if (count == 0U) break;
-            if (!destination.push_planar(pointers.data(), count)) return BOILEDEGG_RESEARCH_PV_RT_FIFO_OVERFLOW;
+        while (boiledegg_research_pv_rt_available(handle) != 0U) {
+            if (queue.free() == 0U) return BOILEDEGG_RESEARCH_PV_RT_FIFO_OVERFLOW;
+            const auto capacity = static_cast<std::uint32_t>(std::min<std::size_t>(scratch_frames_, queue.free()));
+            const auto pulled = boiledegg_research_pv_rt_pull(handle, pointers.data(), capacity);
+            if (pulled == 0U) break;
+            if (!queue.push_planar(pointers.data(), pulled)) return BOILEDEGG_RESEARCH_PV_RT_FIFO_OVERFLOW;
         }
         return BOILEDEGG_RESEARCH_PV_RT_OK;
     }
 
-    boiledegg_research_pv_rt_result pump(bool /*finalizing*/) noexcept {
+    bool filter_pair(const float* low, const float* high) noexcept {
+        const std::size_t position = history_position_;
+        for (std::uint32_t channel = 0U; channel < channels_; ++channel) {
+            const std::size_t base = static_cast<std::size_t>(channel) * fir_taps_;
+            diff_history_[base + position] = low[channel] - high[channel];
+            high_history_[base + position] = high[channel];
+        }
+
+        if (raw_pairs_ >= fir_half_) {
+            for (std::uint32_t channel = 0U; channel < channels_; ++channel) {
+                const std::size_t base = static_cast<std::size_t>(channel) * fir_taps_;
+                double lowpass_difference = 0.0;
+                for (std::uint32_t tap = 0U; tap < fir_taps_; ++tap) {
+                    const std::size_t slot = (position + fir_taps_ - tap) % fir_taps_;
+                    lowpass_difference += static_cast<double>(lowpass_[tap]) * diff_history_[base + slot];
+                }
+                const std::size_t delayed = (position + fir_taps_ - fir_half_) % fir_taps_;
+                output_frame_[channel] = high_history_[base + delayed] + static_cast<float>(lowpass_difference);
+            }
+            if (!output_queue_.push_frame(output_frame_.data())) return false;
+            ++output_frames_;
+        }
+
+        history_position_ = (position + 1U) % fir_taps_;
+        ++raw_pairs_;
+        return true;
+    }
+
+    boiledegg_research_pv_rt_result pump(bool finalizing) noexcept {
         auto result = drain_child(low_, low_queue_, low_ptrs_);
         if (result != BOILEDEGG_RESEARCH_PV_RT_OK) return result;
         result = drain_child(high_, high_queue_, high_ptrs_);
         if (result != BOILEDEGG_RESEARCH_PV_RT_OK) return result;
 
         while (low_queue_.count() != 0U && high_queue_.count() != 0U) {
-            // During startup filter_pair does not need final FIFO space. After
-            // the group delay has elapsed, stop pairing before overflowing the
-            // caller-visible queue.
-            if (filter_samples_ >= fir_half_ && output_queue_.free() == 0U) {
-                return BOILEDEGG_RESEARCH_PV_RT_FIFO_OVERFLOW;
-            }
-            if (!low_queue_.pop_frame(low_frame_.data()) || !high_queue_.pop_frame(high_frame_.data())) {
-                return BOILEDEGG_RESEARCH_PV_RT_INTERNAL_ERROR;
-            }
-            if (!filter_pair(low_frame_.data(), high_frame_.data())) {
-                return BOILEDEGG_RESEARCH_PV_RT_FIFO_OVERFLOW;
-            }
+            if (output_queue_.free() == 0U) return BOILEDEGG_RESEARCH_PV_RT_FIFO_OVERFLOW;
+            (void)low_queue_.pop_frame(low_frame_.data());
+            (void)high_queue_.pop_frame(high_frame_.data());
+            if (!filter_pair(low_frame_.data(), high_frame_.data())) return BOILEDEGG_RESEARCH_PV_RT_FIFO_OVERFLOW;
+        }
+
+        if (finalizing && low_queue_.count() != high_queue_.count()) {
+            return BOILEDEGG_RESEARCH_PV_RT_INTERNAL_ERROR;
         }
         return BOILEDEGG_RESEARCH_PV_RT_OK;
-    }
-
-    bool filter_pair(const float* low, const float* high) noexcept {
-        const std::size_t write = history_write_;
-        for (std::uint32_t channel = 0U; channel < channels_; ++channel) {
-            diff_history_[static_cast<std::size_t>(channel) * fir_taps_ + write] = low[channel] - high[channel];
-            high_history_[static_cast<std::size_t>(channel) * fir_taps_ + write] = high[channel];
-        }
-
-        for (std::uint32_t channel = 0U; channel < channels_; ++channel) {
-            const auto base = static_cast<std::size_t>(channel) * fir_taps_;
-            double filtered = 0.0;
-            for (std::uint32_t tap = 0U; tap < fir_taps_; ++tap) {
-                const std::size_t index = (write + fir_taps_ - tap) % fir_taps_;
-                filtered += static_cast<double>(lowpass_[tap]) * diff_history_[base + index];
-            }
-            const std::size_t delayed_index = (write + fir_taps_ - fir_half_) % fir_taps_;
-            output_frame_[channel] = high_history_[base + delayed_index] + static_cast<float>(filtered);
-        }
-
-        history_write_ = (history_write_ + 1U) % fir_taps_;
-        ++filter_samples_;
-        if (filter_samples_ <= fir_half_) return true;
-        if (!output_queue_.push_frame(output_frame_.data())) return false;
-        ++output_frames_;
-        return true;
     }
 
     std::uint32_t sample_rate_{}, channels_{}, max_block_{};
@@ -411,32 +407,25 @@ private:
     float time_ratio_{}, pitch_ratio_{};
     std::size_t branch_capacity_{}, output_capacity_{};
     std::uint32_t scratch_frames_{};
-    boiledegg_research_pv_rt_handle* low_{};
-    boiledegg_research_pv_rt_handle* high_{};
-    ring_buffer low_queue_;
-    ring_buffer high_queue_;
-    ring_buffer output_queue_;
+    ring_buffer low_queue_, high_queue_, output_queue_;
     std::vector<float> low_scratch_, high_scratch_;
     std::vector<float*> low_ptrs_, high_ptrs_;
     std::vector<float> low_frame_, high_frame_, output_frame_;
     std::vector<float> lowpass_, diff_history_, high_history_;
-    std::size_t history_write_{};
-    std::uint64_t filter_samples_{}, input_frames_{}, output_frames_{};
+    std::size_t history_position_{};
+    std::uint64_t raw_pairs_{}, input_frames_{}, output_frames_{};
     bool flushed_{};
+    boiledegg_research_pv_rt_handle* low_{};
+    boiledegg_research_pv_rt_handle* high_{};
 };
 
 } // namespace boiled_egg::research::multires_detail
 
-struct boiledegg_research_multires_rt_handle {
-    boiled_egg::research::multires_detail::engine* engine{};
-};
+struct boiledegg_research_multires_rt_handle { boiled_egg::research::multires_detail::engine* engine{}; };
 
 extern "C" {
-
 boiledegg_research_multires_rt_config boiledegg_research_multires_rt_default_config(
-    uint32_t sample_rate,
-    uint32_t channels,
-    uint32_t max_block_frames) {
+    std::uint32_t sample_rate, std::uint32_t channels, std::uint32_t max_block_frames) {
     boiledegg_research_multires_rt_config config{};
     config.struct_size = sizeof(config);
     config.abi_version = BOILEDEGG_RESEARCH_MULTIRES_RT_ABI_VERSION;
@@ -445,7 +434,7 @@ boiledegg_research_multires_rt_config boiledegg_research_multires_rt_default_con
     config.max_block_frames = max_block_frames;
     config.initial_time_ratio = 1.0F;
     config.initial_pitch_ratio = 1.0F;
-    config.formant_mode = BOILEDEGG_RESEARCH_PV_RT_FORMANT_OFF;
+    config.formant_mode = BOILEDEGG_RESEARCH_PV_RT_FORMANT_HARMONIC;
     config.formant_cepstral_order = 40U;
     config.formant_gain_limit_db = 15.0F;
     config.monophonic_min_f0_hz = 60.0F;
@@ -473,9 +462,6 @@ boiledegg_research_multires_rt_handle* boiledegg_research_multires_rt_create(
         }
         if (result != nullptr) *result = BOILEDEGG_RESEARCH_PV_RT_OK;
         return handle;
-    } catch (const boiledegg_research_pv_rt_result& child_result) {
-        if (result != nullptr) *result = child_result;
-        return nullptr;
     } catch (const std::bad_alloc&) {
         if (result != nullptr) *result = BOILEDEGG_RESEARCH_PV_RT_OUT_OF_MEMORY;
         return nullptr;
@@ -493,51 +479,54 @@ void boiledegg_research_multires_rt_destroy(boiledegg_research_multires_rt_handl
 }
 
 boiledegg_research_pv_rt_result boiledegg_research_multires_rt_reset(boiledegg_research_multires_rt_handle* handle) {
-    return (handle == nullptr || handle->engine == nullptr)
-        ? BOILEDEGG_RESEARCH_PV_RT_INVALID_ARGUMENT : handle->engine->reset();
-}
-boiledegg_research_pv_rt_result boiledegg_research_multires_rt_set_time_ratio(boiledegg_research_multires_rt_handle* handle, float ratio) {
-    return (handle == nullptr || handle->engine == nullptr)
-        ? BOILEDEGG_RESEARCH_PV_RT_INVALID_ARGUMENT : handle->engine->set_time_ratio(ratio);
-}
-float boiledegg_research_multires_rt_get_time_ratio(const boiledegg_research_multires_rt_handle* handle) {
-    return (handle == nullptr || handle->engine == nullptr) ? 0.0F : handle->engine->time_ratio();
-}
-boiledegg_research_pv_rt_result boiledegg_research_multires_rt_set_pitch_ratio(boiledegg_research_multires_rt_handle* handle, float ratio) {
-    return (handle == nullptr || handle->engine == nullptr)
-        ? BOILEDEGG_RESEARCH_PV_RT_INVALID_ARGUMENT : handle->engine->set_pitch_ratio(ratio);
-}
-float boiledegg_research_multires_rt_get_pitch_ratio(const boiledegg_research_multires_rt_handle* handle) {
-    return (handle == nullptr || handle->engine == nullptr) ? 0.0F : handle->engine->pitch_ratio();
-}
-boiledegg_research_pv_rt_result boiledegg_research_multires_rt_push(
-    boiledegg_research_multires_rt_handle* handle,
-    const float* const* input,
-    uint32_t frames) {
-    return (handle == nullptr || handle->engine == nullptr)
-        ? BOILEDEGG_RESEARCH_PV_RT_INVALID_ARGUMENT : handle->engine->push(input, frames);
-}
-uint32_t boiledegg_research_multires_rt_available(const boiledegg_research_multires_rt_handle* handle) {
-    return (handle == nullptr || handle->engine == nullptr) ? 0U : handle->engine->available();
-}
-uint32_t boiledegg_research_multires_rt_pull(
-    boiledegg_research_multires_rt_handle* handle,
-    float* const* output,
-    uint32_t capacity_frames) {
-    return (handle == nullptr || handle->engine == nullptr) ? 0U : handle->engine->pull(output, capacity_frames);
-}
-boiledegg_research_pv_rt_result boiledegg_research_multires_rt_flush(boiledegg_research_multires_rt_handle* handle) {
-    return (handle == nullptr || handle->engine == nullptr)
-        ? BOILEDEGG_RESEARCH_PV_RT_INVALID_ARGUMENT : handle->engine->flush();
-}
-uint32_t boiledegg_research_multires_rt_latency_frames(const boiledegg_research_multires_rt_handle* handle) {
-    return (handle == nullptr || handle->engine == nullptr) ? 0U : handle->engine->latency();
-}
-uint64_t boiledegg_research_multires_rt_input_frames(const boiledegg_research_multires_rt_handle* handle) {
-    return (handle == nullptr || handle->engine == nullptr) ? 0U : handle->engine->input_frames();
-}
-uint64_t boiledegg_research_multires_rt_output_frames(const boiledegg_research_multires_rt_handle* handle) {
-    return (handle == nullptr || handle->engine == nullptr) ? 0U : handle->engine->output_frames();
+    return handle == nullptr || handle->engine == nullptr ? BOILEDEGG_RESEARCH_PV_RT_INVALID_ARGUMENT : handle->engine->reset();
 }
 
-} // extern "C"
+boiledegg_research_pv_rt_result boiledegg_research_multires_rt_set_time_ratio(
+    boiledegg_research_multires_rt_handle* handle, float ratio) {
+    return handle == nullptr || handle->engine == nullptr ? BOILEDEGG_RESEARCH_PV_RT_INVALID_ARGUMENT : handle->engine->set_time_ratio(ratio);
+}
+
+float boiledegg_research_multires_rt_get_time_ratio(const boiledegg_research_multires_rt_handle* handle) {
+    return handle == nullptr || handle->engine == nullptr ? 0.0F : handle->engine->time_ratio();
+}
+
+boiledegg_research_pv_rt_result boiledegg_research_multires_rt_set_pitch_ratio(
+    boiledegg_research_multires_rt_handle* handle, float ratio) {
+    return handle == nullptr || handle->engine == nullptr ? BOILEDEGG_RESEARCH_PV_RT_INVALID_ARGUMENT : handle->engine->set_pitch_ratio(ratio);
+}
+
+float boiledegg_research_multires_rt_get_pitch_ratio(const boiledegg_research_multires_rt_handle* handle) {
+    return handle == nullptr || handle->engine == nullptr ? 0.0F : handle->engine->pitch_ratio();
+}
+
+boiledegg_research_pv_rt_result boiledegg_research_multires_rt_push(
+    boiledegg_research_multires_rt_handle* handle, const float* const* input, std::uint32_t frames) {
+    return handle == nullptr || handle->engine == nullptr ? BOILEDEGG_RESEARCH_PV_RT_INVALID_ARGUMENT : handle->engine->push(input, frames);
+}
+
+std::uint32_t boiledegg_research_multires_rt_available(const boiledegg_research_multires_rt_handle* handle) {
+    return handle == nullptr || handle->engine == nullptr ? 0U : handle->engine->available();
+}
+
+std::uint32_t boiledegg_research_multires_rt_pull(
+    boiledegg_research_multires_rt_handle* handle, float* const* output, std::uint32_t capacity_frames) {
+    return handle == nullptr || handle->engine == nullptr ? 0U : handle->engine->pull(output, capacity_frames);
+}
+
+boiledegg_research_pv_rt_result boiledegg_research_multires_rt_flush(boiledegg_research_multires_rt_handle* handle) {
+    return handle == nullptr || handle->engine == nullptr ? BOILEDEGG_RESEARCH_PV_RT_INVALID_ARGUMENT : handle->engine->flush();
+}
+
+std::uint32_t boiledegg_research_multires_rt_latency_frames(const boiledegg_research_multires_rt_handle* handle) {
+    return handle == nullptr || handle->engine == nullptr ? 0U : handle->engine->latency();
+}
+
+std::uint64_t boiledegg_research_multires_rt_input_frames(const boiledegg_research_multires_rt_handle* handle) {
+    return handle == nullptr || handle->engine == nullptr ? 0U : handle->engine->input_frames();
+}
+
+std::uint64_t boiledegg_research_multires_rt_output_frames(const boiledegg_research_multires_rt_handle* handle) {
+    return handle == nullptr || handle->engine == nullptr ? 0U : handle->engine->output_frames();
+}
+}
