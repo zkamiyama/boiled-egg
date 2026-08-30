@@ -31,6 +31,15 @@ struct parameter_event : boiledegg_parameter_event {
     }
 };
 
+inline boiledegg_profile_config profile(
+    boiledegg_quality_mode quality,
+    boiledegg_formant_mode formants = BOILEDEGG_FORMANT_OFF) noexcept {
+    auto value = boiledegg_default_profile();
+    value.quality_mode = static_cast<uint32_t>(quality);
+    value.formant_mode = static_cast<uint32_t>(formants);
+    return value;
+}
+
 class engine {
 public:
     explicit engine(boiledegg_config config) {
@@ -39,8 +48,20 @@ public:
         if (!handle_) throw error(result);
     }
 
+    engine(boiledegg_config config, boiledegg_profile_config profile_config) {
+        boiledegg_result result = BOILEDEGG_OK;
+        handle_ = boiledegg_create_ex(&config, &profile_config, &result);
+        if (!handle_) throw error(result);
+    }
+
     engine(uint32_t sample_rate, uint32_t channels)
         : engine(boiledegg_default_config(sample_rate, channels)) {}
+
+    engine(uint32_t sample_rate, uint32_t channels,
+           boiledegg_quality_mode quality,
+           boiledegg_formant_mode formants = BOILEDEGG_FORMANT_OFF)
+        : engine(boiledegg_default_config(sample_rate, channels),
+                 profile(quality, formants)) {}
 
     ~engine() { boiledegg_destroy(handle_); }
 
