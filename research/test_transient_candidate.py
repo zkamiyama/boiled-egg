@@ -17,7 +17,7 @@ SECONDS = 3
 FUNDAMENTALS = (55.0, 80.0, 120.0, 220.0, 440.0)
 SHIFTS = (-12, 7, 12)
 CANDIDATE_FFT = 1024
-CANDIDATE_HOP = 128
+CANDIDATE_HOP = 256
 MAX_ABS_CENTS = 5.0
 MIN_TONE_TO_SPUR_DB = 20.0
 
@@ -48,7 +48,6 @@ def render(
 
 
 def analyze(audio: np.ndarray, target_hz: float) -> tuple[float, float, float]:
-    # Remove startup/tail context before the long-window spectral measurement.
     margin = SR // 2
     x = np.asarray(audio[margin:-margin], dtype=np.float64)
     n_fft = 1 << int(np.ceil(np.log2(len(x) * 4)))
@@ -111,6 +110,7 @@ def main() -> None:
                         "f0": f0,
                         "selection": "profile:transient" if candidate else "raw-window-diagnostic",
                         "fft": fft_size,
+                        "hop": CANDIDATE_HOP if candidate else fft_size // 8,
                         "shift_semitones": semitones,
                         "target_hz": target_hz,
                         "peak_hz": peak_hz,
@@ -139,7 +139,7 @@ def main() -> None:
 
     candidate_rows = [row for row in rows if row["selection"] == "profile:transient"]
     print(
-        "Transient profile (1024/128) tonal gate: max_abs_cents=",
+        f"Transient profile ({CANDIDATE_FFT}/{CANDIDATE_HOP}) tonal gate: max_abs_cents=",
         max(abs(float(row["cents_error"])) for row in candidate_rows),
         "min_tone_to_spur_db=",
         min(float(row["tone_to_spur_db"]) for row in candidate_rows),

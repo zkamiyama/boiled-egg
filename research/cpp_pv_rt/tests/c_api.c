@@ -13,7 +13,7 @@ int main(void) {
     config.formant_mode = BOILEDEGG_RESEARCH_PV_RT_FORMANT_HARMONIC;
     if (boiledegg_research_pv_rt_configure_quality_profile(
             &config, BOILEDEGG_RESEARCH_PV_RT_PROFILE_TRANSIENT) != BOILEDEGG_RESEARCH_PV_RT_OK) return 21;
-    if (config.fft_size != 1024U || config.analysis_hop != 128U ||
+    if (config.fft_size != 1024U || config.analysis_hop != 256U ||
         config.mode != BOILEDEGG_RESEARCH_PV_RT_PHASE_LOCKED) return 22;
     if (config.formant_mode != BOILEDEGG_RESEARCH_PV_RT_FORMANT_HARMONIC) return 23;
 

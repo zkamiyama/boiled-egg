@@ -19,7 +19,7 @@ boiledegg_research_pv_rt_result boiledegg_research_pv_rt_configure_quality_profi
             return BOILEDEGG_RESEARCH_PV_RT_OK;
         case BOILEDEGG_RESEARCH_PV_RT_PROFILE_TRANSIENT:
             config->fft_size = 1024U;
-            config->analysis_hop = 128U;
+            config->analysis_hop = 256U;
             config->mode = BOILEDEGG_RESEARCH_PV_RT_PHASE_LOCKED;
             return BOILEDEGG_RESEARCH_PV_RT_OK;
         default:

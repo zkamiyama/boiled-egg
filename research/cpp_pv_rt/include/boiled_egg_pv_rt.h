@@ -82,7 +82,7 @@ boiledegg_research_pv_rt_config boiledegg_research_pv_rt_default_config(
  * pitch/time ratios and all other user choices are preserved.
  *
  * GENERAL   = 2048 FFT / 256 hop / phase locked
- * TRANSIENT = 1024 FFT / 128 hop / phase locked
+ * TRANSIENT = 1024 FFT / 256 hop / phase locked
  */
 boiledegg_research_pv_rt_result boiledegg_research_pv_rt_configure_quality_profile(
     boiledegg_research_pv_rt_config* config,
