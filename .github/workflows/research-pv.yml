@@ -65,10 +65,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build libsndfile1
           python3 -m pip install --user -r requirements-dev.txt
-      - name: Build research renderer and benchmarks
+      - name: Build research renderers and benchmarks
         run: |
           cmake -S research/cpp_pv_rt -B build/formant -G Ninja -DCMAKE_BUILD_TYPE=Release
-          cmake --build build/formant --target boiled_egg_pv_rt_cli boiled_egg_pv_rt_formant_bench boiled_egg_pv_rt_window_bench --parallel 2
+          cmake --build build/formant --target \
+            boiled_egg_pv_rt_cli \
+            boiled_egg_pv_rt_formant_bench \
+            boiled_egg_pv_rt_window_bench \
+            boiled_egg_multires_rt_cli \
+            boiled_egg_multires_rt_bench \
+            --parallel 2
       - name: Pitch, duration, stereo and spectral-envelope regression
         run: python3 research/eval_formant_pitch.py --cli build/formant/boiled_egg_pv_rt_cli --output results/formant-ci
       - name: Transient profile tonal safety gate
@@ -78,6 +84,11 @@ jobs:
           --output results/transient-tonal
           --diagnostic-fft 512
           --diagnostic-fft 2048
+      - name: Multi-resolution tonal safety gate
+        run: >-
+          python3 research/test_multires_candidate.py
+          --cli build/formant/boiled_egg_multires_rt_cli
+          --output results/multires-tonal
       - name: General callback diagnostic and gross regression gate
         run: |
           build/formant/boiled_egg_pv_rt_formant_bench > results/formant-callback.csv
@@ -121,7 +132,26 @@ jobs:
           if transient > 1.50:
               raise SystemExit('gross Transient callback regression')
           PY
-      - name: Upload Linux renderer, source and quality reports
+      - name: Multi-resolution callback CPU diagnostic and gross gate
+        run: |
+          build/formant/boiled_egg_multires_rt_bench > results/multires-callback.csv
+          python3 - <<'PY'
+          import csv
+          from pathlib import Path
+          rows=list(csv.DictReader(Path('results/multires-callback.csv').open()))
+          cpu=max(rows,key=lambda r: float(r['cpu_p99_deadline_ratio']))
+          wall=max(rows,key=lambda r: float(r['wall_p99_deadline_ratio']))
+          print('worst multi-resolution CPU p99/deadline', cpu['cpu_p99_deadline_ratio'], 'at', cpu['sample_rate'], 'Hz /', cpu['block'], 'frames / pitch', cpu['pitch_ratio'])
+          print('worst multi-resolution wall p99/deadline', wall['wall_p99_deadline_ratio'], 'at', wall['sample_rate'], 'Hz /', wall['block'], 'frames / pitch', wall['pitch_ratio'])
+          # Hosted runner p99 is noisy; CPU time removes scheduler wait but still
+          # varies with VM frequency/cache state. This is a gross regression gate,
+          # while repeated pinned development runs are used for promotion decisions.
+          if float(cpu['cpu_p99_deadline_ratio']) >= 1.50:
+              raise SystemExit('gross multi-resolution CPU callback regression')
+          if float(wall['wall_p99_deadline_ratio']) >= 1.75:
+              raise SystemExit('gross multi-resolution wall callback regression')
+          PY
+      - name: Upload Linux renderers, source and quality reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -130,16 +160,21 @@ jobs:
           retention-days: 14
           path: |
             build/formant/boiled_egg_pv_rt_cli
+            build/formant/boiled_egg_multires_rt_cli
             results/formant-ci/report.json
             results/transient-tonal/metrics.csv
+            results/multires-tonal/metrics.csv
             results/formant-callback.csv
             results/window-callback.csv
+            results/multires-callback.csv
             research/cpp_pv_rt/**
             research/eval_formant_pitch.py
             research/eval_elastique_pitch.py
+            research/eval_multiresolution.py
             research/make_blind_pitch_pack.py
             research/make_blind_profile_pack.py
             research/test_transient_candidate.py
+            research/test_multires_candidate.py
             research/formant_reference.py
             research/test_formant_reference.py
 
@@ -160,9 +195,11 @@ jobs:
           research/test_formant_reference.py
           research/eval_formant_pitch.py
           research/eval_elastique_pitch.py
+          research/eval_multiresolution.py
           research/make_blind_pitch_pack.py
           research/make_blind_profile_pack.py
           research/test_transient_candidate.py
+          research/test_multires_candidate.py
       - name: Independent offline strategy regression
         working-directory: research
         run: python3 -m unittest -v test_formant_reference.py
