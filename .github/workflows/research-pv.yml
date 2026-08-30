@@ -134,6 +134,7 @@ jobs:
             research/eval_formant_pitch.py
             research/eval_elastique_pitch.py
             research/make_blind_pitch_pack.py
+            research/make_blind_profile_pack.py
             research/test_transient_candidate.py
             research/formant_reference.py
             research/test_formant_reference.py
@@ -156,6 +157,7 @@ jobs:
           research/eval_formant_pitch.py
           research/eval_elastique_pitch.py
           research/make_blind_pitch_pack.py
+          research/make_blind_profile_pack.py
           research/test_transient_candidate.py
       - name: Independent offline strategy regression
         working-directory: research
