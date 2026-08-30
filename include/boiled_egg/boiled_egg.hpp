@@ -17,6 +17,10 @@ private:
 };
 
 struct parameter_event : boiledegg_parameter_event {
+    static parameter_event time_ratio(uint32_t sample_offset, float ratio) noexcept {
+        return parameter_event{sizeof(boiledegg_parameter_event), sample_offset,
+                               BOILEDEGG_PARAMETER_TIME_RATIO, ratio};
+    }
     static parameter_event pitch_ratio(uint32_t sample_offset, float ratio) noexcept {
         return parameter_event{sizeof(boiledegg_parameter_event), sample_offset,
                                BOILEDEGG_PARAMETER_PITCH_RATIO, ratio};
@@ -68,6 +72,24 @@ public:
         info.struct_size = sizeof(info);
         check(boiledegg_get_runtime_info(handle_, &info));
         return info;
+    }
+
+    boiledegg_parameter_state parameter_state() const {
+        boiledegg_parameter_state state{};
+        state.struct_size = sizeof(state);
+        check(boiledegg_get_parameter_state(handle_, &state));
+        return state;
+    }
+
+    void set_parameter_state(const boiledegg_parameter_state& state) {
+        check(boiledegg_set_parameter_state(handle_, &state));
+    }
+
+    void apply_parameter_events(std::span<const parameter_event> events) {
+        const auto* raw = events.empty()
+            ? nullptr
+            : static_cast<const boiledegg_parameter_event*>(events.data());
+        check(boiledegg_apply_parameter_events(handle_, raw, static_cast<uint32_t>(events.size())));
     }
 
     uint32_t push(const float* const* input, uint32_t frames) {
