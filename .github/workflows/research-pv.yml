@@ -71,7 +71,7 @@ jobs:
           cmake --build build/formant --target boiled_egg_pv_rt_cli boiled_egg_pv_rt_formant_bench boiled_egg_pv_rt_window_bench --parallel 2
       - name: Pitch, duration, stereo and spectral-envelope regression
         run: python3 research/eval_formant_pitch.py --cli build/formant/boiled_egg_pv_rt_cli --output results/formant-ci
-      - name: Transient candidate tonal safety gate
+      - name: Transient profile tonal safety gate
         run: >-
           python3 research/test_transient_candidate.py
           --cli build/formant/boiled_egg_pv_rt_cli
@@ -87,14 +87,13 @@ jobs:
           rows=list(csv.DictReader(Path('results/formant-callback.csv').open()))
           worst=max(float(r['p99_deadline_ratio']) for r in rows)
           print('worst general formant p99/deadline', worst)
-          # GitHub hosted runners show substantial scheduler/VM jitter.  The
-          # absolute number is archived as a diagnostic; fail here only on a
-          # gross regression.  The window benchmark below supplies a same-VM
-          # relative regression check for the Transient candidate.
+          # Absolute hosted-runner p99 is archived as a diagnostic. Fail only
+          # on a gross regression; use same-VM relative gates below for profile
+          # comparisons.
           if worst >= 1.50:
               raise SystemExit('gross general callback regression')
           PY
-      - name: Window-size callback diagnostic and relative gate
+      - name: Window and hop callback diagnostic and relative gate
         run: |
           build/formant/boiled_egg_pv_rt_window_bench > results/window-callback.csv
           python3 - <<'PY'
@@ -102,20 +101,25 @@ jobs:
           from pathlib import Path
           rows=list(csv.DictReader(Path('results/window-callback.csv').open()))
           worst={}
-          for fft in sorted({int(r['fft']) for r in rows}):
-              group=[r for r in rows if int(r['fft']) == fft]
+          for key in sorted({(int(r['fft']), int(r['hop'])) for r in rows}):
+              fft, hop=key
+              group=[r for r in rows if int(r['fft']) == fft and int(r['hop']) == hop]
               item=max(group,key=lambda r: float(r['p99_deadline_ratio']))
-              worst[fft]=float(item['p99_deadline_ratio'])
-              print('fft', fft, 'worst p99/deadline', item['p99_deadline_ratio'], 'at', item['sample_rate'], 'Hz /', item['block'], 'frames')
-          # 1024/128 is the current Transient candidate.  Compare it with the
-          # 2048/256 General engine on the same VM instead of trusting an
-          # unstable hosted-runner absolute threshold.
-          relative=worst[1024] / max(worst[2048], 1.0e-9)
-          print('1024-to-2048 worst-p99 ratio', relative)
-          if relative > 1.25:
-              raise SystemExit('1024 window realtime cost regressed relative to 2048')
-          if worst[1024] > 1.50:
-              raise SystemExit('gross 1024 callback regression')
+              worst[key]=float(item['p99_deadline_ratio'])
+              print('fft/hop', f'{fft}/{hop}', 'worst p99/deadline', item['p99_deadline_ratio'], 'at', item['sample_rate'], 'Hz /', item['block'], 'frames')
+          general=worst[(2048,256)]
+          legacy=worst[(1024,128)]
+          transient=worst[(1024,256)]
+          vs_general=transient / max(general, 1.0e-9)
+          vs_legacy=transient / max(legacy, 1.0e-9)
+          print('Transient 1024/256 vs General 2048/256', vs_general)
+          print('Transient 1024/256 vs old 1024/128 candidate', vs_legacy)
+          if vs_general > 1.25:
+              raise SystemExit('Transient profile realtime cost regressed relative to General')
+          if vs_legacy > 1.25:
+              raise SystemExit('Transient 256-hop cost regressed relative to 128-hop candidate')
+          if transient > 1.50:
+              raise SystemExit('gross Transient callback regression')
           PY
       - name: Upload Linux renderer, source and quality reports
         if: always()
