@@ -6,6 +6,7 @@ option(BOILED_EGG_PV_RT_BUILD_CLI "Build CLI" ON)
 
 add_library(boiled_egg_research_pv_rt STATIC
     src/fft.cpp
+    src/profile.cpp
     src/pv_rt.cpp
 )
 target_compile_features(boiled_egg_research_pv_rt PUBLIC cxx_std_20)

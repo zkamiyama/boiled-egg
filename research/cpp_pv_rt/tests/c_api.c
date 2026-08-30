@@ -6,6 +6,28 @@
 int main(void) {
     enum { block = 96, frames = 4800 };
     boiledegg_research_pv_rt_config config = boiledegg_research_pv_rt_default_config(48000U, 1U, block);
+
+    if (config.fft_size != 2048U || config.analysis_hop != 256U ||
+        config.mode != BOILEDEGG_RESEARCH_PV_RT_PHASE_LOCKED) return 20;
+
+    config.formant_mode = BOILEDEGG_RESEARCH_PV_RT_FORMANT_HARMONIC;
+    if (boiledegg_research_pv_rt_configure_quality_profile(
+            &config, BOILEDEGG_RESEARCH_PV_RT_PROFILE_TRANSIENT) != BOILEDEGG_RESEARCH_PV_RT_OK) return 21;
+    if (config.fft_size != 1024U || config.analysis_hop != 128U ||
+        config.mode != BOILEDEGG_RESEARCH_PV_RT_PHASE_LOCKED) return 22;
+    if (config.formant_mode != BOILEDEGG_RESEARCH_PV_RT_FORMANT_HARMONIC) return 23;
+
+    boiledegg_research_pv_rt_config snapshot = config;
+    if (boiledegg_research_pv_rt_configure_quality_profile(&config, 999U) !=
+        BOILEDEGG_RESEARCH_PV_RT_INVALID_ARGUMENT) return 24;
+    if (config.fft_size != snapshot.fft_size || config.analysis_hop != snapshot.analysis_hop ||
+        config.mode != snapshot.mode || config.formant_mode != snapshot.formant_mode) return 25;
+
+    if (boiledegg_research_pv_rt_configure_quality_profile(
+            &config, BOILEDEGG_RESEARCH_PV_RT_PROFILE_GENERAL) != BOILEDEGG_RESEARCH_PV_RT_OK) return 26;
+    if (config.fft_size != 2048U || config.analysis_hop != 256U ||
+        config.mode != BOILEDEGG_RESEARCH_PV_RT_PHASE_LOCKED) return 27;
+
     config.initial_time_ratio = 1.5F;
     config.mode = BOILEDEGG_RESEARCH_PV_RT_PHASE_LOCKED;
     boiledegg_research_pv_rt_result result = BOILEDEGG_RESEARCH_PV_RT_INTERNAL_ERROR;

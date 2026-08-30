@@ -29,6 +29,17 @@ typedef enum boiledegg_research_pv_rt_mode {
 } boiledegg_research_pv_rt_mode;
 
 /*
+ * User-facing research quality presets. These are intentionally separate from
+ * boiledegg_research_pv_rt_mode: the low-level TRANSIENT mode above means
+ * frame-level phase reset, while the TRANSIENT quality profile below selects
+ * the independently validated shorter phase-locked analysis window.
+ */
+typedef enum boiledegg_research_pv_rt_quality_profile {
+    BOILEDEGG_RESEARCH_PV_RT_PROFILE_GENERAL = 0,
+    BOILEDEGG_RESEARCH_PV_RT_PROFILE_TRANSIENT = 1
+} boiledegg_research_pv_rt_quality_profile;
+
+/*
  * Spectral-envelope handling for pitch shifting.
  *
  * HARMONIC is the polyphonic/general path: one linked spectral envelope is
@@ -65,6 +76,17 @@ typedef struct boiledegg_research_pv_rt_config {
 
 boiledegg_research_pv_rt_config boiledegg_research_pv_rt_default_config(
     uint32_t sample_rate, uint32_t channels, uint32_t max_block_frames);
+
+/*
+ * Apply only the quality-dependent PV window/phase settings. Formant mode,
+ * pitch/time ratios and all other user choices are preserved.
+ *
+ * GENERAL   = 2048 FFT / 256 hop / phase locked
+ * TRANSIENT = 1024 FFT / 128 hop / phase locked
+ */
+boiledegg_research_pv_rt_result boiledegg_research_pv_rt_configure_quality_profile(
+    boiledegg_research_pv_rt_config* config,
+    uint32_t profile);
 
 boiledegg_research_pv_rt_handle* boiledegg_research_pv_rt_create(
     const boiledegg_research_pv_rt_config* config,
