@@ -7,7 +7,6 @@ on:
       - "research/*.py"
       - "eval/tsm_dataset.py"
       - "eval/test_tsm_dataset.py"
-      - "eval/make_final_research_pack.py"
       - ".github/workflows/research-pv.yml"
   pull_request:
     paths:
@@ -101,7 +100,6 @@ jobs:
           eval/tsm_dataset.py
           eval/import_tsm_dataset.py
           eval/run_tsm_benchmark.py
-          eval/make_final_research_pack.py
           research/pv_reference.py
           research/run_pv_experiment.py
           research/run_cpp_pv_rt_experiment.py
