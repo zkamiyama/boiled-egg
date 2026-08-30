@@ -1,16 +1,21 @@
 include(FetchContent)
 
-set(CLAP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
-  clap
+  clap_headers
   GIT_REPOSITORY https://github.com/free-audio/clap.git
   GIT_TAG 1.2.10
   GIT_SHALLOW TRUE
 )
-FetchContent_MakeAvailable(clap)
+FetchContent_GetProperties(clap_headers)
+if(NOT clap_headers_POPULATED)
+  FetchContent_Populate(clap_headers)
+endif()
+
+add_library(boiled_egg_clap_headers INTERFACE)
+target_include_directories(boiled_egg_clap_headers INTERFACE ${clap_headers_SOURCE_DIR}/include)
 
 add_library(boiled_egg_clap MODULE boiled_egg_clap.cpp)
-target_link_libraries(boiled_egg_clap PRIVATE boiled_egg::boiled_egg clap)
+target_link_libraries(boiled_egg_clap PRIVATE boiled_egg::boiled_egg boiled_egg_clap_headers)
 target_compile_features(boiled_egg_clap PRIVATE cxx_std_20)
 set_target_properties(boiled_egg_clap PROPERTIES
   PREFIX ""
@@ -31,7 +36,7 @@ endif()
 
 if(BOILED_EGG_BUILD_TESTS AND UNIX AND NOT APPLE)
   add_executable(boiled_egg_clap_smoke test_clap_smoke.cpp)
-  target_link_libraries(boiled_egg_clap_smoke PRIVATE clap ${CMAKE_DL_LIBS})
+  target_link_libraries(boiled_egg_clap_smoke PRIVATE boiled_egg_clap_headers ${CMAKE_DL_LIBS})
   target_compile_features(boiled_egg_clap_smoke PRIVATE cxx_std_20)
   add_test(NAME boiled_egg_clap_smoke
            COMMAND boiled_egg_clap_smoke $<TARGET_FILE:boiled_egg_clap>)
