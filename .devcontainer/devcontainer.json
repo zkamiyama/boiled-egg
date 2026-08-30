@@ -1,0 +1,7 @@
+{
+  "name": "boiled_egg-lab",
+  "build": {"dockerfile": "../Dockerfile.dev", "context": ".."},
+  "workspaceFolder": "/work",
+  "mounts": ["source=${localWorkspaceFolder},target=/work,type=bind"],
+  "remoteUser": "root"
+}

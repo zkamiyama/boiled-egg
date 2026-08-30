@@ -1,0 +1,15 @@
+/build*/
+/build/
+/.venv/
+/results/**/*.wav
+/data/external/*
+!/data/external/README.txt
+/third_party/eval-only/*
+!/third_party/eval-only/.gitkeep
+/third_party/local/
+__pycache__/
+*.pyc
+.DS_Store
+/data/synthetic/*.wav
+/data/generated/
+/results/external/decoded/

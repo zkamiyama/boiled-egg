@@ -1,0 +1,68 @@
+name: ci
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        cxx: [20, 23]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libsndfile1
+          python3 -m pip install --user -r requirements-dev.txt
+      - name: Configure
+        shell: bash
+        run: |
+          if [[ "${{ matrix.compiler }}" == clang ]]; then
+            export CC=clang CXX=clang++
+          else
+            export CC=gcc CXX=g++
+          fi
+          cmake -S . -B build-ci -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=${{ matrix.cxx }}
+      - name: Build
+        run: cmake --build build-ci --parallel 2
+      - name: Unit tests
+        run: ctest --test-dir build-ci --output-on-failure
+      - name: ABI export check
+        run: scripts/check_exports.sh build-ci/libboiled_egg.so
+      - name: Installed consumer smoke test
+        run: scripts/test_install_consumer.sh build-ci
+      - name: Synthetic evaluation smoke test
+        run: |
+          python3 eval/generate_corpus.py
+          python3 eval/run_synthetic.py --cli build-ci/boiled_egg_cli
+
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build clang
+      - name: ASan + UBSan
+        run: |
+          cmake -S . -B build-san -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DBOILED_EGG_SANITIZE=ON
+          cmake --build build-san --parallel 2
+          ctest --test-dir build-san --output-on-failure
+
+  static-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Configure and build static SDK
+        run: |
+          cmake -S . -B build-static -G Ninja -DCMAKE_BUILD_TYPE=Release -DBOILED_EGG_BUILD_SHARED=OFF
+          cmake --build build-static --parallel 2
+          ctest --test-dir build-static --output-on-failure
+      - name: Installed C/C++ consumer smoke test
+        run: scripts/test_install_consumer.sh build-static

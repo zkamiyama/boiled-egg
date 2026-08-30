@@ -1,0 +1,75 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "release",
+      "displayName": "GCC Release C++20",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_STANDARD": "20"
+      }
+    },
+    {
+      "name": "static",
+      "displayName": "GCC Release C++20 Static",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/static",
+      "cacheVariables": {
+        "BOILED_EGG_BUILD_SHARED": "OFF"
+      }
+    },
+    {
+      "name": "cxx23",
+      "displayName": "GCC Release C++23",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/cxx23",
+      "cacheVariables": {
+        "CMAKE_CXX_STANDARD": "23"
+      }
+    },
+    {
+      "name": "clang",
+      "displayName": "Clang Release C++20",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/clang",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++"
+      }
+    },
+    {
+      "name": "asan",
+      "displayName": "Clang ASan+UBSan",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/asan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_CXX_STANDARD": "20",
+        "BOILED_EGG_SANITIZE": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {"name": "release", "configurePreset": "release"},
+    {"name": "static", "configurePreset": "static"},
+    {"name": "cxx23", "configurePreset": "cxx23"},
+    {"name": "clang", "configurePreset": "clang"},
+    {"name": "asan", "configurePreset": "asan"}
+  ],
+  "testPresets": [
+    {"name": "release", "configurePreset": "release", "output": {"outputOnFailure": true}},
+    {"name": "static", "configurePreset": "static", "output": {"outputOnFailure": true}},
+    {"name": "cxx23", "configurePreset": "cxx23", "output": {"outputOnFailure": true}},
+    {"name": "clang", "configurePreset": "clang", "output": {"outputOnFailure": true}},
+    {"name": "asan", "configurePreset": "asan", "output": {"outputOnFailure": true}}
+  ]
+}
