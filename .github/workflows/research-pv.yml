@@ -6,7 +6,6 @@ on:
       - "research/cpp_pv_rt/**"
       - "research/*.py"
       - "eval/tsm_dataset.py"
-      - "eval/test_tsm_dataset.py"
       - ".github/workflows/research-pv.yml"
   pull_request:
     paths:
@@ -70,7 +69,7 @@ jobs:
         run: |
           cmake -S research/cpp_pv_rt -B build/formant -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build build/formant --target boiled_egg_pv_rt_cli boiled_egg_pv_rt_formant_bench --parallel 2
-      - name: Pitch and spectral-envelope regression
+      - name: Pitch, duration, stereo and spectral-envelope regression
         run: python3 research/eval_formant_pitch.py --cli build/formant/boiled_egg_pv_rt_cli --output results/formant-ci
       - name: Callback p99 deadline gate
         run: |
@@ -84,8 +83,18 @@ jobs:
           if worst >= 0.90:
               raise SystemExit('formant callback p99 gate failed')
           PY
+      - name: Upload Linux renderer and quality reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: formant-linux-x64
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            build/formant/boiled_egg_pv_rt_cli
+            results/formant-ci/report.json
+            results/formant-callback.csv
 
-  python-research-tools:
+  python-reference-formant:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -94,14 +103,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libsndfile1
           python3 -m pip install --user -r requirements-dev.txt
-      - name: Compile Python tools
+      - name: Compile research Python
         run: >-
           python3 -m py_compile
-          eval/tsm_dataset.py
-          eval/import_tsm_dataset.py
-          eval/run_tsm_benchmark.py
           research/pv_reference.py
-          research/run_pv_experiment.py
+          research/formant_reference.py
+          research/test_formant_reference.py
           research/eval_formant_pitch.py
-      - name: Generated mini-dataset test
-        run: python3 -m unittest -v eval/test_tsm_dataset.py
+      - name: Independent offline strategy regression
+        working-directory: research
+        run: python3 -m unittest -v test_formant_reference.py
