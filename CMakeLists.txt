@@ -5,6 +5,7 @@ option(BOILED_EGG_BUILD_SHARED "Build shared library" ON)
 option(BOILED_EGG_BUILD_TESTS "Build tests" ON)
 option(BOILED_EGG_BUILD_TOOLS "Build CLI tools" ON)
 option(BOILED_EGG_BUILD_BENCH "Build benchmarks" ON)
+option(BOILED_EGG_BUILD_CLAP "Build the CLAP reference plugin adapter" OFF)
 option(BOILED_EGG_SANITIZE "Enable ASan/UBSan" OFF)
 option(BOILED_EGG_THREAD_SANITIZE "Enable ThreadSanitizer" OFF)
 
@@ -100,6 +101,10 @@ if(BOILED_EGG_BUILD_TESTS)
   add_executable(boiled_egg_daw_host_test tests/test_daw_host.cpp)
   target_link_libraries(boiled_egg_daw_host_test PRIVATE boiled_egg::boiled_egg)
   add_test(NAME boiled_egg_daw_host_test COMMAND boiled_egg_daw_host_test)
+endif()
+
+if(BOILED_EGG_BUILD_CLAP)
+  add_subdirectory(adapters/clap)
 endif()
 
 include(GNUInstallDirs)
