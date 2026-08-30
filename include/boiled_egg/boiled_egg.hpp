@@ -33,10 +33,12 @@ struct parameter_event : boiledegg_parameter_event {
 
 inline boiledegg_profile_config profile(
     boiledegg_quality_mode quality,
-    boiledegg_formant_mode formants = BOILEDEGG_FORMANT_OFF) noexcept {
+    boiledegg_formant_mode formants = BOILEDEGG_FORMANT_OFF,
+    boiledegg_formant_strategy strategy = BOILEDEGG_FORMANT_STRATEGY_AUTO) noexcept {
     auto value = boiledegg_default_profile();
     value.quality_mode = static_cast<uint32_t>(quality);
     value.formant_mode = static_cast<uint32_t>(formants);
+    value.formant_strategy = static_cast<uint32_t>(strategy);
     return value;
 }
 
@@ -59,9 +61,10 @@ public:
 
     engine(uint32_t sample_rate, uint32_t channels,
            boiledegg_quality_mode quality,
-           boiledegg_formant_mode formants = BOILEDEGG_FORMANT_OFF)
+           boiledegg_formant_mode formants = BOILEDEGG_FORMANT_OFF,
+           boiledegg_formant_strategy strategy = BOILEDEGG_FORMANT_STRATEGY_AUTO)
         : engine(boiledegg_default_config(sample_rate, channels),
-                 profile(quality, formants)) {}
+                 profile(quality, formants, strategy)) {}
 
     ~engine() { boiledegg_destroy(handle_); }
 
