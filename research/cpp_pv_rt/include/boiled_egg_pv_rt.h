@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define BOILEDEGG_RESEARCH_PV_RT_ABI_VERSION 1u
+#define BOILEDEGG_RESEARCH_PV_RT_ABI_VERSION 2u
 
 typedef struct boiledegg_research_pv_rt_handle boiledegg_research_pv_rt_handle;
 
@@ -28,6 +28,21 @@ typedef enum boiledegg_research_pv_rt_mode {
     BOILEDEGG_RESEARCH_PV_RT_TRANSIENT = 2
 } boiledegg_research_pv_rt_mode;
 
+/*
+ * Spectral-envelope handling for pitch shifting.
+ *
+ * HARMONIC is the polyphonic/general path: one linked spectral envelope is
+ * estimated and pre-warped for the later resampling stage.
+ * MONOPHONIC uses the same envelope estimate but gates correction around a
+ * cepstrally estimated harmonic series to reduce amplification of spectral
+ * valleys/noise on voiced single-pitch material.
+ */
+typedef enum boiledegg_research_pv_rt_formant_mode {
+    BOILEDEGG_RESEARCH_PV_RT_FORMANT_OFF = 0,
+    BOILEDEGG_RESEARCH_PV_RT_FORMANT_HARMONIC = 1,
+    BOILEDEGG_RESEARCH_PV_RT_FORMANT_MONOPHONIC = 2
+} boiledegg_research_pv_rt_formant_mode;
+
 typedef struct boiledegg_research_pv_rt_config {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -37,9 +52,15 @@ typedef struct boiledegg_research_pv_rt_config {
     uint32_t fft_size;
     uint32_t analysis_hop;
     uint32_t mode;
-    float initial_time_ratio;
+    float initial_time_ratio;      /* final output duration / input duration */
+    float initial_pitch_ratio;     /* output frequency / input frequency */
     float transient_floor;
     float transient_sigma;
+    uint32_t formant_mode;
+    uint32_t formant_cepstral_order;
+    float formant_gain_limit_db;
+    float monophonic_min_f0_hz;
+    float monophonic_max_f0_hz;
 } boiledegg_research_pv_rt_config;
 
 boiledegg_research_pv_rt_config boiledegg_research_pv_rt_default_config(
@@ -53,6 +74,8 @@ void boiledegg_research_pv_rt_destroy(boiledegg_research_pv_rt_handle* handle);
 boiledegg_research_pv_rt_result boiledegg_research_pv_rt_reset(boiledegg_research_pv_rt_handle* handle);
 boiledegg_research_pv_rt_result boiledegg_research_pv_rt_set_time_ratio(boiledegg_research_pv_rt_handle* handle, float ratio);
 float boiledegg_research_pv_rt_get_time_ratio(const boiledegg_research_pv_rt_handle* handle);
+boiledegg_research_pv_rt_result boiledegg_research_pv_rt_set_pitch_ratio(boiledegg_research_pv_rt_handle* handle, float ratio);
+float boiledegg_research_pv_rt_get_pitch_ratio(const boiledegg_research_pv_rt_handle* handle);
 boiledegg_research_pv_rt_result boiledegg_research_pv_rt_push(boiledegg_research_pv_rt_handle* handle, const float* const* input, uint32_t frames);
 uint32_t boiledegg_research_pv_rt_available(const boiledegg_research_pv_rt_handle* handle);
 uint32_t boiledegg_research_pv_rt_pull(boiledegg_research_pv_rt_handle* handle, float* const* output, uint32_t capacity_frames);

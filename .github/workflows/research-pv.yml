@@ -7,7 +7,6 @@ on:
       - "research/*.py"
       - "eval/tsm_dataset.py"
       - "eval/test_tsm_dataset.py"
-      - "eval/make_final_research_pack.py"
       - ".github/workflows/research-pv.yml"
   pull_request:
     paths:
@@ -58,6 +57,34 @@ jobs:
           cmake --build build/research-pv-asan --parallel 2
           ctest --test-dir build/research-pv-asan --output-on-failure
 
+  pitch-formant-regression:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libsndfile1
+          python3 -m pip install --user -r requirements-dev.txt
+      - name: Build research renderer
+        run: |
+          cmake -S research/cpp_pv_rt -B build/formant -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/formant --target boiled_egg_pv_rt_cli boiled_egg_pv_rt_formant_bench --parallel 2
+      - name: Pitch and spectral-envelope regression
+        run: python3 research/eval_formant_pitch.py --cli build/formant/boiled_egg_pv_rt_cli --output results/formant-ci
+      - name: Callback p99 deadline gate
+        run: |
+          build/formant/boiled_egg_pv_rt_formant_bench > results/formant-callback.csv
+          python3 - <<'PY'
+          import csv
+          from pathlib import Path
+          rows=list(csv.DictReader(Path('results/formant-callback.csv').open()))
+          worst=max(float(r['p99_deadline_ratio']) for r in rows)
+          print('worst formant p99/deadline', worst)
+          if worst >= 0.90:
+              raise SystemExit('formant callback p99 gate failed')
+          PY
+
   python-research-tools:
     runs-on: ubuntu-24.04
     steps:
@@ -73,12 +100,8 @@ jobs:
           eval/tsm_dataset.py
           eval/import_tsm_dataset.py
           eval/run_tsm_benchmark.py
-          eval/make_final_research_pack.py
           research/pv_reference.py
           research/run_pv_experiment.py
-          research/run_cpp_pv_rt_experiment.py
-          research/tune_cpp_pv_rt.py
-          research/transient_graft.py
-          research/run_transient_graft_experiment.py
+          research/eval_formant_pitch.py
       - name: Generated mini-dataset test
         run: python3 -m unittest -v eval/test_tsm_dataset.py
