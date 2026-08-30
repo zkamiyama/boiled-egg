@@ -1,0 +1,84 @@
+name: research-pv
+
+on:
+  push:
+    paths:
+      - "research/cpp_pv_rt/**"
+      - "research/*.py"
+      - "eval/tsm_dataset.py"
+      - "eval/test_tsm_dataset.py"
+      - "eval/make_final_research_pack.py"
+      - ".github/workflows/research-pv.yml"
+  pull_request:
+    paths:
+      - "research/**"
+      - "eval/**"
+      - ".github/workflows/research-pv.yml"
+
+jobs:
+  cpp-streaming-pv:
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        standard: [20, 23]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select compiler
+        run: |
+          if [[ "${{ matrix.compiler }}" == "clang" ]]; then
+            echo "CC=clang" >> "$GITHUB_ENV"
+            echo "CXX=clang++" >> "$GITHUB_ENV"
+          else
+            echo "CC=gcc" >> "$GITHUB_ENV"
+            echo "CXX=g++" >> "$GITHUB_ENV"
+          fi
+      - name: Configure
+        run: cmake -S research/cpp_pv_rt -B build/research-pv -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=${{ matrix.standard }}
+      - name: Build
+        run: cmake --build build/research-pv --parallel 2
+      - name: Tests
+        run: ctest --test-dir build/research-pv --output-on-failure
+
+  sanitizers:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: >-
+          cmake -S research/cpp_pv_rt -B build/research-pv-asan -G Ninja
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_C_COMPILER=clang
+          -DCMAKE_CXX_COMPILER=clang++
+          -DCMAKE_CXX_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer'
+          -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=address,undefined'
+      - name: Build and test
+        run: |
+          cmake --build build/research-pv-asan --parallel 2
+          ctest --test-dir build/research-pv-asan --output-on-failure
+
+  python-research-tools:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsndfile1
+          python3 -m pip install --user -r requirements-dev.txt
+      - name: Compile Python tools
+        run: >-
+          python3 -m py_compile
+          eval/tsm_dataset.py
+          eval/import_tsm_dataset.py
+          eval/run_tsm_benchmark.py
+          eval/make_final_research_pack.py
+          research/pv_reference.py
+          research/run_pv_experiment.py
+          research/run_cpp_pv_rt_experiment.py
+          research/tune_cpp_pv_rt.py
+          research/transient_graft.py
+          research/run_transient_graft_experiment.py
+      - name: Generated mini-dataset test
+        run: python3 -m unittest -v eval/test_tsm_dataset.py
