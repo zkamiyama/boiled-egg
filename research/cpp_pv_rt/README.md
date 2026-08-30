@@ -8,16 +8,22 @@ Architecture:
 - pure C opaque-handle ABI (`include/boiled_egg_pv_rt.h`);
 - header-only C++ RAII wrapper (`include/boiled_egg_pv_rt.hpp`);
 - linked multichannel analysis;
-- classic, identity-phase-locked, and transient-reset modes;
-- pitch shift by internal time stretch plus a 40-tap table-driven sinc resampler;
-- explicit `off`, `harmonic`, and `monophonic` formant modes;
-- linked-channel cepstral spectral-envelope correction for harmonic/polyphonic material;
-- F0/cepstral harmonic-lobe gating for monophonic positive formant correction;
-- magnitude-squared weighted log-gain centering plus residual power compensation, preventing the formant EQ from becoming an unintended broadband gain stage;
-- fixed-capacity input/OLA/PV/output rings;
+- classic, identity-phase-locked, and transient-reset low-level PV modes;
+- fixed-capacity input/OLA/output rings;
 - no heap allocation in normal `push`/`pull`/parameter calls after construction;
 - exact-duration flush contract;
-- generated C consumer, deterministic-block, no-allocation, compiler-matrix, sanitizer, pitch/formant and callback-deadline tests.
+- generated C consumer, deterministic-block, no-allocation, compiler-matrix, and sanitizer tests.
+
+## Validated manual quality profiles
+
+The research API exposes a separate **quality profile** concept so a user-facing `Transient` choice is not confused with the older low-level frame-phase-reset mode.
+
+- **General**: 2048 FFT / 256 hop / phase locked.
+- **Transient**: 1024 FFT / 128 hop / phase locked.
+
+Use `boiledegg_research_pv_rt_configure_quality_profile()` in C, or `pv_rt_quality_profile` / `pv_rt_profile_config()` in the C++ wrapper. Applying a quality profile only changes FFT size, analysis hop and low-level PV mode; formant strategy and pitch/time parameters remain independent.
+
+The Transient profile was promoted inside the research backend only after the 20-reference derived-Elastique comparison, the 55–440 Hz sustained-tone safety gate, and same-VM realtime comparison. See `ELASTIQUE_PITCH_RESULTS.md` and `FORMANT_RESULTS.md`.
 
 Build:
 
@@ -27,20 +33,11 @@ cmake --build build/cpp_pv_rt --parallel 2
 ctest --test-dir build/cpp_pv_rt --output-on-failure
 ```
 
-Render a time stretch:
+Render:
 
 ```bash
 build/cpp_pv_rt/boiled_egg_pv_rt_cli input.wav output.wav \
-  --time 1.25 --mode transient --fft 2048 --hop 256
+  --time 1.25 --mode locked --fft 1024 --hop 128
 ```
 
-Render a pitch shift with formant preservation:
-
-```bash
-build/cpp_pv_rt/boiled_egg_pv_rt_cli input.wav output.wav \
-  --time 1 --pitch-semitones 7 --mode locked --formant harmonic
-```
-
-Use `--formant monophonic` for voice or a single pitched source. The formant implementation remains research-only until blind listening and the full realtime/product gates justify promotion.
-
-The Roberts/Paliwal 20-reference test-set checkpoint and exact commands/metrics are recorded in `FORMANT_RESULTS.md`. Dataset audio is intentionally not committed.
+The dataset tuner lives at `research/tune_cpp_pv_rt.py`. Its proxy MOS is only an engineering triage signal. Promotion into the product core requires blind listening against the supplied references plus all realtime gates.
