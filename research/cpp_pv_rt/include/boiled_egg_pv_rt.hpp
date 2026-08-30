@@ -6,6 +6,26 @@
 #include <utility>
 
 namespace boiled_egg::research {
+
+enum class pv_rt_quality_profile : uint32_t {
+    general = BOILEDEGG_RESEARCH_PV_RT_PROFILE_GENERAL,
+    transient = BOILEDEGG_RESEARCH_PV_RT_PROFILE_TRANSIENT,
+};
+
+inline boiledegg_research_pv_rt_config pv_rt_profile_config(
+    uint32_t sample_rate,
+    uint32_t channels,
+    uint32_t max_block_frames,
+    pv_rt_quality_profile profile) {
+    auto config = boiledegg_research_pv_rt_default_config(sample_rate, channels, max_block_frames);
+    const auto result = boiledegg_research_pv_rt_configure_quality_profile(
+        &config, static_cast<uint32_t>(profile));
+    if (result != BOILEDEGG_RESEARCH_PV_RT_OK) {
+        throw std::runtime_error(boiledegg_research_pv_rt_result_string(result));
+    }
+    return config;
+}
+
 class pv_rt_engine {
 public:
     explicit pv_rt_engine(const boiledegg_research_pv_rt_config& config) {
@@ -15,6 +35,12 @@ public:
     }
     pv_rt_engine(uint32_t sample_rate, uint32_t channels, uint32_t max_block_frames)
         : pv_rt_engine(boiledegg_research_pv_rt_default_config(sample_rate, channels, max_block_frames)) {}
+    pv_rt_engine(
+        uint32_t sample_rate,
+        uint32_t channels,
+        uint32_t max_block_frames,
+        pv_rt_quality_profile profile)
+        : pv_rt_engine(pv_rt_profile_config(sample_rate, channels, max_block_frames, profile)) {}
     ~pv_rt_engine() { boiledegg_research_pv_rt_destroy(handle_); }
     pv_rt_engine(const pv_rt_engine&) = delete;
     pv_rt_engine& operator=(const pv_rt_engine&) = delete;
