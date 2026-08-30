@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Full-band tonal safety gate for the 1024/128 Transient candidate."""
+"""Full-band tonal safety gate for the validated Transient quality profile."""
 from __future__ import annotations
 
 import argparse
@@ -22,16 +22,26 @@ MAX_ABS_CENTS = 5.0
 MIN_TONE_TO_SPUR_DB = 20.0
 
 
-def render(cli: Path, source: Path, destination: Path, semitones: int, fft_size: int) -> None:
+def render(
+    cli: Path,
+    source: Path,
+    destination: Path,
+    semitones: int,
+    fft_size: int,
+    use_transient_profile: bool,
+) -> None:
     command = [
         str(cli), str(source), str(destination),
         "--time", "1",
         "--pitch-semitones", str(semitones),
-        "--mode", "locked",
         "--formant", "off",
-        "--fft", str(fft_size),
-        "--hop", str(fft_size // 8),
     ]
+    if use_transient_profile:
+        # Exercise the user-facing preset rather than reproducing its raw FFT
+        # values here. The C API test separately checks the preset mapping.
+        command += ["--profile", "transient"]
+    else:
+        command += ["--mode", "locked", "--fft", str(fft_size), "--hop", str(fft_size // 8)]
     result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode:
         raise RuntimeError(result.stderr or result.stdout)
@@ -66,14 +76,14 @@ def main() -> None:
         type=int,
         action="append",
         default=[],
-        help="Additional FFT sizes to measure without gating (for example 512 or 2048).",
+        help="Additional raw FFT sizes to measure without gating (for example 512 or 2048).",
     )
     args = parser.parse_args()
     root = args.output or Path(tempfile.mkdtemp(prefix="boiled-egg-transient-tonal-"))
     root.mkdir(parents=True, exist_ok=True)
 
     fft_sizes = [CANDIDATE_FFT] + [x for x in args.diagnostic_fft if x != CANDIDATE_FFT]
-    rows: list[dict[str, float | int]] = []
+    rows: list[dict[str, float | int | str]] = []
 
     for f0 in FUNDAMENTALS:
         t = np.arange(SR * SECONDS, dtype=np.float64) / SR
@@ -82,9 +92,10 @@ def main() -> None:
         sf.write(source, source_audio, SR, subtype="FLOAT")
 
         for fft_size in fft_sizes:
+            candidate = fft_size == CANDIDATE_FFT
             for semitones in SHIFTS:
                 destination = root / f"output_{f0:g}_{fft_size}_{semitones:+d}.wav"
-                render(args.cli, source, destination, semitones, fft_size)
+                render(args.cli, source, destination, semitones, fft_size, candidate)
                 output, sample_rate = sf.read(destination, dtype="float32")
                 if sample_rate != SR or len(output) != len(source_audio):
                     raise SystemExit(
@@ -98,6 +109,7 @@ def main() -> None:
                 rows.append(
                     {
                         "f0": f0,
+                        "selection": "profile:transient" if candidate else "raw-window-diagnostic",
                         "fft": fft_size,
                         "shift_semitones": semitones,
                         "target_hz": target_hz,
@@ -107,7 +119,7 @@ def main() -> None:
                     }
                 )
 
-                if fft_size == CANDIDATE_FFT:
+                if candidate:
                     if abs(cents) >= MAX_ABS_CENTS:
                         raise SystemExit(
                             f"Transient tonal pitch regression: f0={f0:g}, shift={semitones:+d}, "
@@ -125,12 +137,12 @@ def main() -> None:
         writer.writeheader()
         writer.writerows(rows)
 
-    candidate = [row for row in rows if row["fft"] == CANDIDATE_FFT]
+    candidate_rows = [row for row in rows if row["selection"] == "profile:transient"]
     print(
-        "Transient 1024/128 tonal gate: max_abs_cents=",
-        max(abs(float(row["cents_error"])) for row in candidate),
+        "Transient profile (1024/128) tonal gate: max_abs_cents=",
+        max(abs(float(row["cents_error"])) for row in candidate_rows),
         "min_tone_to_spur_db=",
-        min(float(row["tone_to_spur_db"]) for row in candidate),
+        min(float(row["tone_to_spur_db"]) for row in candidate_rows),
     )
     for fft_size in fft_sizes:
         group = [row for row in rows if row["fft"] == fft_size]
