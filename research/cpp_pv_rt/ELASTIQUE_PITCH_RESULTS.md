@@ -15,7 +15,7 @@ The supplied Roberts/Paliwal test set contains pitch-preserving time-scale-modif
 
 The reproducible harness is `research/eval_elastique_pitch.py`.
 
-## 2048 / 256 phase-locked baseline
+## General: 2048 / 256 phase locked
 
 With harmonic formant preservation:
 
@@ -36,34 +36,54 @@ With formant processing disabled, envelope delta is **+0.315 dB mean** and wins 
 
 The current frame-level transient-reset mode did **not** solve the temporal problem. At 2048 samples, harmonic formant mode produced an onset-correlation delta of about **-0.206**, slightly worse than ordinary phase-locked processing. Directly, transient-reset minus phase-locked onset correlation averaged roughly **-0.0068**.
 
-This is consistent with the hypothesis that a long analysis window smears the magnitude trajectory itself; resetting phase alone cannot undo that magnitude smearing.
+At a 1024-sample window the result remained negative: phase-locked onset delta was about **-0.0367**, while the reset variant was about **-0.0469**. The selected user-facing Transient profile therefore remains phase locked. This is consistent with the hypothesis that a long analysis window smears the magnitude trajectory itself; resetting phase alone cannot undo magnitude smearing.
 
-## Window-size experiment
+## Window and hop experiments
 
 All rows below use phase locking plus harmonic formant preservation.
 
 | FFT / hop | Envelope delta vs derived Elastique | Envelope wins | Onset-correlation delta | Onset wins |
 |---|---:|---:|---:|---:|
 | 2048 / 256 | -2.148 dB | 74 / 80 | -0.199 | 10 / 80 |
-| **1024 / 128** | **-2.134 dB** | **77 / 80** | **-0.0367** | **36 / 80** |
+| 1024 / 64 | -1.614 dB | 69 / 80 | -0.0456 | — |
+| 1024 / 128 | -2.134 dB | 77 / 80 | -0.0367 | 36 / 80 |
+| **1024 / 256** | **-2.694 dB** | **79 / 80** | **-0.0363** | **34 / 80** |
 | 512 / 64 | -1.804 dB | 69 / 80 | **+0.0296** | **46 / 80** |
 
-The 1024 window is therefore the current candidate for the manual **Transient** quality profile: it retains essentially all of the formant-envelope advantage while reducing the mean onset deficit by about 80%.
+For 1024 / 256, the full formant-strategy sweep produced:
 
-## Why 512 is not being promoted
+- **Harmonic:** envelope delta **-2.694 dB**, 79 / 80 wins, onset delta **-0.0363**;
+- **Monophonic:** envelope delta **-2.404 dB**, 78 / 80 wins, onset delta **-0.0400**;
+- **Off:** envelope delta **-0.273 dB**, 53 / 80 wins, onset delta **-0.0413**.
 
-A separate sustained-tone diagnostic tested 55, 80, 120, 220 and 440 Hz sources at -12, +7 and +12 semitones. The 512-sample window failed badly for low fundamentals: 55/80 Hz cases showed large pitch errors and strong spurious components, including a worst observed pitch error of roughly **819 cents**.
+The 1024 / 256 configuration is therefore the selected manual **Transient** research profile. Relative to General it keeps the large temporal improvement, improves the broad-envelope result further, and costs less CPU than the earlier 1024 / 128 candidate.
 
-The same diagnostic for 1024 samples kept the tested pitch estimates within roughly **2.2 cents**, with a worst tone-to-spur diagnostic of about **23.9 dB**. The 2048 window remained cleaner at low frequencies, with the corresponding worst tone-to-spur diagnostic around **44.8 dB**.
+## Low-frequency safety and realtime checkpoint
+
+A separate sustained-tone diagnostic tests 55, 80, 120, 220 and 440 Hz sources at -12, +7 and +12 semitones.
+
+- **1024 / 256 Transient:** maximum measured pitch error about **2.153 cents**; minimum target-tone/spur ratio about **23.56 dB**.
+- 1024 / 128 old candidate: comparable tonal safety, minimum target-tone/spur about 23.87 dB.
+- 2048 / 256 General: minimum target-tone/spur about **44.83 dB**.
+- 512 / 64: fails low fundamentals badly, including a worst observed pitch error around **819 cents** and target-tone/spur around **-59 dB**.
+
+On the same GitHub hosted runner, the most recent 96 kHz / 32-frame p99/deadline diagnostic was:
+
+- 512 / 64: **0.220**;
+- 1024 / 128: **0.546**;
+- **1024 / 256: 0.386**;
+- 2048 / 256: **0.709**.
+
+Hosted-runner absolute p99 is noisy, so CI archives the absolute value but primarily gates same-VM relative regressions plus gross overruns.
 
 Therefore:
 
-- **General** research candidate: 2048 / 256 phase locked.
-- **Transient** research candidate: 1024 / 128 phase locked.
-- 512 / 64: do not expose as a full-band mode; retain only as a possible future high-frequency/multi-resolution branch.
+- **General:** 2048 / 256 phase locked.
+- **Transient:** **1024 / 256 phase locked**.
+- 512 / 64: do not expose as a full-band mode; retain only as a possible future high-frequency / multi-resolution branch.
 
 ## Listening
 
-`research/make_blind_pitch_pack.py` creates a deterministic, level-matched blind pack from the evaluation renders. It randomizes derived Elastique, formant-off, harmonic-preserve and monophonic-preserve renders into anonymous A-D choices and emits an `index.html`, `manifest.csv`, and a separate `answer_key.csv`.
+`research/make_blind_pitch_pack.py` creates a deterministic, level-matched blind pack from the evaluation renders. `research/make_blind_profile_pack.py` selects attack-sensitive conditions and creates a General-vs-Transient profile comparison with separate Overall and Attack/clarity votes.
 
 No third-party dataset audio or derived Elastique audio should be committed to this repository.
