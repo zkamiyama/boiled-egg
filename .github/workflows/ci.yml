@@ -65,6 +65,21 @@ jobs:
           cmake --build build-tsan --parallel 2
           ctest --test-dir build-tsan --output-on-failure -R 'boiled_egg_(threading|daw_host)_test'
 
+  clap-adapter:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build git
+      - name: Build CLAP 1.2.10 adapter
+        run: |
+          cmake -S . -B build-clap -G Ninja -DCMAKE_BUILD_TYPE=Release -DBOILED_EGG_BUILD_CLAP=ON -DBOILED_EGG_BUILD_TOOLS=OFF -DBOILED_EGG_BUILD_BENCH=OFF
+          cmake --build build-clap --parallel 2
+      - name: Load and exercise plugin through CLAP ABI
+        run: ctest --test-dir build-clap --output-on-failure -R boiled_egg_clap_smoke
+      - name: Verify CLAP entry symbol
+        run: nm -D build-clap/adapters/clap/boiled_egg.clap | grep -E ' [BDR] clap_entry$'
+
   static-package:
     runs-on: ubuntu-latest
     steps:
