@@ -35,7 +35,9 @@ At 48 kHz the default input-side lookahead is 1152 frames (~24 ms). At 88.2/96 k
 
 After `boiledegg_create()`, the normal `push()` / `pull()` / parameter-setter path is designed to perform no heap allocation, locking, I/O, logging, exception propagation or thread creation. `boiled_egg_noalloc_test` checks C++ heap allocation after warm-up. ASan/UBSan and randomized dynamic automation are part of the test matrix.
 
-The current v0.1 handle is not documented as safe for concurrent calls from multiple threads; hosts should serialize calls per instance.
+### Threading model for DAWs
+
+Distinct `boiledegg_handle` instances are independent and may be processed concurrently on separate DAW worker/audio threads. On one instance, the streaming state machine (`push`/`pull`/`flush`) remains single-owner and lock-free; do not call it concurrently from multiple audio threads. Control/UI threads may update time and pitch parameters concurrently with streaming through lock-free atomic mailboxes, with changes observed at the next streaming API boundary. `reset` and `destroy` remain lifecycle operations and must be serialized with streaming. This deliberately optimizes for DAW track-level parallelism without putting mutexes on the realtime path. ThreadSanitizer plus dedicated multi-instance/control-thread tests enforce this contract.
 
 ## Build
 

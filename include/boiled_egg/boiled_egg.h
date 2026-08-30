@@ -61,9 +61,23 @@ BOILEDEGG_API float boiledegg_get_time_ratio(const boiledegg_handle* handle);
 BOILEDEGG_API float boiledegg_get_pitch_ratio(const boiledegg_handle* handle);
 
 /*
- * Streaming API. Audio is non-interleaved planar float32.
- * Push may accept fewer frames only if the fixed-capacity input FIFO is full.
- * Pull never allocates or blocks.
+ * Threading contract:
+ *
+ * - Distinct boiledegg_handle instances are independent and may be processed
+ *   concurrently on different DAW worker/audio threads.
+ * - Time/pitch setters and their getters may run on a control/UI thread
+ *   concurrently with the streaming thread. Parameter transfer uses lock-free
+ *   32-bit atomic mailboxes and is observed at the next streaming API boundary.
+ * - For one handle, push/pull/available/flush/is_drained are a single-owner
+ *   streaming interface. Do not call them concurrently from multiple threads.
+ * - reset and destroy are lifecycle operations: serialize them with streaming;
+ *   destroy must not race with any call using the same handle.
+ *
+ * This is intentionally optimized for DAWs: parallelize across track/plugin
+ * instances, not by placing a mutex around one instance's DSP state machine.
+ *
+ * Audio is non-interleaved planar float32. Push may accept fewer frames only
+ * if the fixed-capacity input FIFO is full. Pull never allocates or blocks.
  */
 BOILEDEGG_API boiledegg_result boiledegg_push(
     boiledegg_handle* handle,

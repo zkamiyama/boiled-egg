@@ -53,6 +53,18 @@ jobs:
           cmake --build build-san --parallel 2
           ctest --test-dir build-san --output-on-failure
 
+  thread-sanitizer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build g++
+      - name: TSan concurrency contract
+        run: |
+          cmake -S . -B build-tsan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBOILED_EGG_THREAD_SANITIZE=ON -DBOILED_EGG_BUILD_TOOLS=OFF -DBOILED_EGG_BUILD_BENCH=OFF
+          cmake --build build-tsan --parallel 2
+          ctest --test-dir build-tsan --output-on-failure -R boiled_egg_threading_test
+
   static-package:
     runs-on: ubuntu-latest
     steps:

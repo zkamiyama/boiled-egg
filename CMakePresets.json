@@ -56,20 +56,77 @@
         "CMAKE_CXX_STANDARD": "20",
         "BOILED_EGG_SANITIZE": "ON"
       }
+    },
+    {
+      "name": "tsan",
+      "displayName": "GCC ThreadSanitizer",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/tsan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++",
+        "CMAKE_CXX_STANDARD": "20",
+        "BOILED_EGG_THREAD_SANITIZE": "ON"
+      }
     }
   ],
   "buildPresets": [
-    {"name": "release", "configurePreset": "release"},
-    {"name": "static", "configurePreset": "static"},
-    {"name": "cxx23", "configurePreset": "cxx23"},
-    {"name": "clang", "configurePreset": "clang"},
-    {"name": "asan", "configurePreset": "asan"}
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "static",
+      "configurePreset": "static"
+    },
+    {
+      "name": "cxx23",
+      "configurePreset": "cxx23"
+    },
+    {
+      "name": "clang",
+      "configurePreset": "clang"
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan"
+    },
+    {
+      "name": "tsan",
+      "configurePreset": "tsan"
+    }
   ],
   "testPresets": [
-    {"name": "release", "configurePreset": "release", "output": {"outputOnFailure": true}},
-    {"name": "static", "configurePreset": "static", "output": {"outputOnFailure": true}},
-    {"name": "cxx23", "configurePreset": "cxx23", "output": {"outputOnFailure": true}},
-    {"name": "clang", "configurePreset": "clang", "output": {"outputOnFailure": true}},
-    {"name": "asan", "configurePreset": "asan", "output": {"outputOnFailure": true}}
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "output": {"outputOnFailure": true}
+    },
+    {
+      "name": "static",
+      "configurePreset": "static",
+      "output": {"outputOnFailure": true}
+    },
+    {
+      "name": "cxx23",
+      "configurePreset": "cxx23",
+      "output": {"outputOnFailure": true}
+    },
+    {
+      "name": "clang",
+      "configurePreset": "clang",
+      "output": {"outputOnFailure": true}
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "output": {"outputOnFailure": true}
+    },
+    {
+      "name": "tsan",
+      "configurePreset": "tsan",
+      "output": {"outputOnFailure": true}
+    }
   ]
 }

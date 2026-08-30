@@ -1,13 +1,37 @@
 #include <boiled_egg/boiled_egg.h>
 #include "engine.hpp"
 
+#include <atomic>
+#include <bit>
 #include <cmath>
 #include <new>
 
 struct boiledegg_handle {
+    static_assert(std::atomic<uint32_t>::is_always_lock_free,
+                  "boiled egg requires lock-free 32-bit atomics");
+
     boiled_egg::detail::Engine engine;
+    std::atomic<uint32_t> requested_time_ratio_bits{std::bit_cast<uint32_t>(1.0f)};
+    std::atomic<uint32_t> requested_pitch_ratio_bits{std::bit_cast<uint32_t>(1.0f)};
+
     explicit boiledegg_handle(const boiledegg_config& c) : engine(c) {}
 };
+
+namespace {
+inline void store_ratio(std::atomic<uint32_t>& bits, float value) noexcept {
+    bits.store(std::bit_cast<uint32_t>(value), std::memory_order_relaxed);
+}
+
+inline float load_ratio(const std::atomic<uint32_t>& bits) noexcept {
+    return std::bit_cast<float>(bits.load(std::memory_order_relaxed));
+}
+
+inline void sync_requested_parameters(boiledegg_handle* h) noexcept {
+    // Called only by the handle's single-owner streaming/lifecycle thread.
+    (void)h->engine.set_time_ratio(load_ratio(h->requested_time_ratio_bits));
+    (void)h->engine.set_pitch_ratio(load_ratio(h->requested_pitch_ratio_bits));
+}
+} // namespace
 
 static bool valid_config(const boiledegg_config& c) {
     if (c.struct_size < sizeof(boiledegg_config) || c.abi_version != BOILEDEGG_ABI_VERSION) return false;
@@ -67,26 +91,50 @@ boiledegg_handle* boiledegg_create(const boiledegg_config* config, boiledegg_res
 }
 
 void boiledegg_destroy(boiledegg_handle* h) { delete h; }
-boiledegg_result boiledegg_reset(boiledegg_handle* h) { return h ? h->engine.reset() : BOILEDEGG_INVALID_ARGUMENT; }
-boiledegg_result boiledegg_set_time_ratio(boiledegg_handle* h, float r) { return h ? h->engine.set_time_ratio(r) : BOILEDEGG_INVALID_ARGUMENT; }
-boiledegg_result boiledegg_set_pitch_ratio(boiledegg_handle* h, float r) { return h ? h->engine.set_pitch_ratio(r) : BOILEDEGG_INVALID_ARGUMENT; }
+boiledegg_result boiledegg_reset(boiledegg_handle* h) {
+    if (!h) return BOILEDEGG_INVALID_ARGUMENT;
+    const auto result = h->engine.reset();
+    if (result == BOILEDEGG_OK) sync_requested_parameters(h);
+    return result;
+}
+boiledegg_result boiledegg_set_time_ratio(boiledegg_handle* h, float r) {
+    if (!h || !std::isfinite(r) || r < 0.25f || r > 4.0f) return BOILEDEGG_INVALID_ARGUMENT;
+    store_ratio(h->requested_time_ratio_bits, r);
+    return BOILEDEGG_OK;
+}
+boiledegg_result boiledegg_set_pitch_ratio(boiledegg_handle* h, float r) {
+    if (!h || !std::isfinite(r) || r < 0.25f || r > 4.0f) return BOILEDEGG_INVALID_ARGUMENT;
+    store_ratio(h->requested_pitch_ratio_bits, r);
+    return BOILEDEGG_OK;
+}
 boiledegg_result boiledegg_set_pitch_semitones(boiledegg_handle* h, float st) {
     if (!h || !std::isfinite(st) || st < -24.0f || st > 24.0f) return BOILEDEGG_INVALID_ARGUMENT;
-    return h->engine.set_pitch_ratio(std::pow(2.0f, st / 12.0f));
+    store_ratio(h->requested_pitch_ratio_bits, std::pow(2.0f, st / 12.0f));
+    return BOILEDEGG_OK;
 }
-float boiledegg_get_time_ratio(const boiledegg_handle* h) { return h ? h->engine.time_ratio() : 0.0f; }
-float boiledegg_get_pitch_ratio(const boiledegg_handle* h) { return h ? h->engine.pitch_ratio() : 0.0f; }
+float boiledegg_get_time_ratio(const boiledegg_handle* h) {
+    return h ? load_ratio(h->requested_time_ratio_bits) : 0.0f;
+}
+float boiledegg_get_pitch_ratio(const boiledegg_handle* h) {
+    return h ? load_ratio(h->requested_pitch_ratio_bits) : 0.0f;
+}
 
 boiledegg_result boiledegg_push(boiledegg_handle* h, const float* const* in, uint32_t frames, uint32_t* accepted) {
     if (!h || !accepted) return BOILEDEGG_INVALID_ARGUMENT;
+    sync_requested_parameters(h);
     return h->engine.push(in, frames, *accepted);
 }
 uint32_t boiledegg_available(const boiledegg_handle* h) { return h ? h->engine.available() : 0; }
 boiledegg_result boiledegg_pull(boiledegg_handle* h, float* const* out, uint32_t cap, uint32_t* produced) {
     if (!h || !produced) return BOILEDEGG_INVALID_ARGUMENT;
+    sync_requested_parameters(h);
     return h->engine.pull(out, cap, *produced);
 }
-boiledegg_result boiledegg_flush(boiledegg_handle* h) { return h ? h->engine.flush() : BOILEDEGG_INVALID_ARGUMENT; }
+boiledegg_result boiledegg_flush(boiledegg_handle* h) {
+    if (!h) return BOILEDEGG_INVALID_ARGUMENT;
+    sync_requested_parameters(h);
+    return h->engine.flush();
+}
 int boiledegg_is_drained(const boiledegg_handle* h) { return h && h->engine.drained() ? 1 : 0; }
 uint32_t boiledegg_input_latency_frames(const boiledegg_handle* h) { return h ? h->engine.input_latency_frames() : 0; }
 
