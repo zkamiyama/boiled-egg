@@ -31,6 +31,7 @@ endif()
 set(BOILED_EGG_SOURCES
     src/boiled_egg.cpp
     src/engine.cpp
+    src/profile.cpp
 )
 
 if(BOILED_EGG_BUILD_SHARED)
@@ -106,6 +107,10 @@ if(BOILED_EGG_BUILD_TESTS)
   add_executable(boiled_egg_daw_host_test tests/test_daw_host.cpp)
   target_link_libraries(boiled_egg_daw_host_test PRIVATE boiled_egg::boiled_egg)
   add_test(NAME boiled_egg_daw_host_test COMMAND boiled_egg_daw_host_test)
+
+  add_executable(boiled_egg_profile_test tests/test_profiles.cpp)
+  target_link_libraries(boiled_egg_profile_test PRIVATE boiled_egg::boiled_egg)
+  add_test(NAME boiled_egg_profile_test COMMAND boiled_egg_profile_test)
 endif()
 
 if(BOILED_EGG_BUILD_CLAP)
