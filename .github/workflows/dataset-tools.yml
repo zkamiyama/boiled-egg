@@ -1,0 +1,32 @@
+name: dataset-tools
+
+on:
+  push:
+    paths:
+      - "eval/tsm_dataset.py"
+      - "eval/import_tsm_dataset.py"
+      - "eval/run_tsm_benchmark.py"
+      - "eval/test_tsm_dataset.py"
+      - "eval/make_tsm_listening_pack.py"
+      - "requirements-dev.txt"
+      - ".github/workflows/dataset-tools.yml"
+  pull_request:
+    paths:
+      - "eval/**"
+      - "requirements-dev.txt"
+      - ".github/workflows/dataset-tools.yml"
+
+jobs:
+  python-tools:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsndfile1
+          python3 -m pip install --user -r requirements-dev.txt
+      - name: Compile
+        run: python3 -m py_compile eval/tsm_dataset.py eval/import_tsm_dataset.py eval/run_tsm_benchmark.py eval/make_tsm_listening_pack.py
+      - name: Unit test with generated mini-dataset
+        run: python3 -m unittest -v eval/test_tsm_dataset.py
