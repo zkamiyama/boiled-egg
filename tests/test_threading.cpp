@@ -173,7 +173,16 @@ bool test_realtime_control_thread_automation() {
     std::thread control([&] {
         for (uint32_t i = 0; !audio_done.load(std::memory_order_acquire); ++i) {
             const float semitones = -12.0f + static_cast<float>(i % 25u);
-            if (boiledegg_set_pitch_semitones(handle, semitones) != BOILEDEGG_OK) {
+            boiledegg_parameter_event event{
+                sizeof(boiledegg_parameter_event), 0,
+                BOILEDEGG_PARAMETER_PITCH_SEMITONES, semitones};
+            // Exercise both the individual setters and the host parameter-flush API.
+            if ((i & 1u) == 0u) {
+                if (boiledegg_set_pitch_semitones(handle, semitones) != BOILEDEGG_OK) {
+                    failed.store(true, std::memory_order_release);
+                    break;
+                }
+            } else if (boiledegg_apply_parameter_events(handle, &event, 1) != BOILEDEGG_OK) {
                 failed.store(true, std::memory_order_release);
                 break;
             }
@@ -184,6 +193,13 @@ bool test_realtime_control_thread_automation() {
             boiledegg_runtime_info info{};
             info.struct_size = sizeof(info);
             if (boiledegg_get_runtime_info(handle, &info) != BOILEDEGG_OK || info.realtime_latency_frames == 0) {
+                failed.store(true, std::memory_order_release);
+                break;
+            }
+            boiledegg_parameter_state state{};
+            state.struct_size = sizeof(state);
+            if (boiledegg_get_parameter_state(handle, &state) != BOILEDEGG_OK ||
+                !std::isfinite(state.pitch_ratio)) {
                 failed.store(true, std::memory_order_release);
                 break;
             }
@@ -214,6 +230,63 @@ bool test_realtime_control_thread_automation() {
     return !failed.load(std::memory_order_acquire);
 }
 
+bool test_sequential_audio_thread_migration() {
+    constexpr uint32_t block = 64;
+    auto config = boiledegg_default_config(48000, 1);
+    config.max_block_size = block;
+    boiledegg_result result = BOILEDEGG_INTERNAL_ERROR;
+    boiledegg_handle* handle = boiledegg_create(&config, &result);
+    if (!handle || result != BOILEDEGG_OK) return false;
+
+    std::vector<float> input(block, 0.1f), output(block, 0.0f);
+    const float* in[1] = {input.data()};
+    float* out[1] = {output.data()};
+    std::atomic<bool> failed{false};
+
+    // Each call is joined before the next one. The symbolic audio owner is the
+    // same, but the operating-system worker thread can change between blocks.
+    for (uint32_t block_index = 0; block_index < 96; ++block_index) {
+        std::thread worker([&] {
+            const auto r = boiledegg_process_realtime(handle, in, out, block, nullptr, 0);
+            if (r != BOILEDEGG_OK) failed.store(true, std::memory_order_release);
+        });
+        worker.join();
+        if (failed.load(std::memory_order_acquire)) break;
+    }
+
+    boiledegg_destroy(handle);
+    return !failed.load(std::memory_order_acquire);
+}
+
+bool test_reset_on_audio_owner() {
+    constexpr uint32_t block = 64;
+    auto config = boiledegg_default_config(48000, 1);
+    config.max_block_size = block;
+    boiledegg_result result = BOILEDEGG_INTERNAL_ERROR;
+    boiledegg_handle* handle = boiledegg_create(&config, &result);
+    if (!handle || result != BOILEDEGG_OK) return false;
+
+    std::vector<float> input(block, 0.1f), output(block, 0.0f);
+    const float* in[1] = {input.data()};
+    float* out[1] = {output.data()};
+    std::atomic<bool> failed{false};
+    std::thread audio([&] {
+        for (uint32_t i = 0; i < 300; ++i) {
+            if ((i % 41u) == 0u && boiledegg_reset(handle) != BOILEDEGG_OK) {
+                failed.store(true, std::memory_order_release);
+                return;
+            }
+            if (boiledegg_process_realtime(handle, in, out, block, nullptr, 0) != BOILEDEGG_OK) {
+                failed.store(true, std::memory_order_release);
+                return;
+            }
+        }
+    });
+    audio.join();
+    boiledegg_destroy(handle);
+    return !failed.load(std::memory_order_acquire);
+}
+
 } // namespace
 
 int main() {
@@ -223,11 +296,19 @@ int main() {
     }
     if (!test_control_thread_automation()) {
         std::cerr << "concurrent control/audio automation test failed\n";
-        return 1;
+        return 2;
     }
     if (!test_realtime_control_thread_automation()) {
         std::cerr << "concurrent realtime control/audio automation test failed\n";
-        return 1;
+        return 3;
+    }
+    if (!test_sequential_audio_thread_migration()) {
+        std::cerr << "sequential audio worker migration test failed\n";
+        return 4;
+    }
+    if (!test_reset_on_audio_owner()) {
+        std::cerr << "audio-owner reset test failed\n";
+        return 5;
     }
     std::cout << "threading contract tests passed\n";
     return 0;
