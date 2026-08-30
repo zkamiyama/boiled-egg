@@ -1,6 +1,7 @@
 #include "boiled_egg_pv_rt.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -11,6 +12,11 @@
 
 namespace {
 
+struct window_config {
+    std::uint32_t fft;
+    std::uint32_t hop;
+};
+
 double quantile(std::vector<double> values, double q) {
     const auto index = static_cast<std::size_t>(std::floor(q * static_cast<double>(values.size() - 1U)));
     std::nth_element(values.begin(), values.begin() + static_cast<std::ptrdiff_t>(index), values.end());
@@ -20,15 +26,21 @@ double quantile(std::vector<double> values, double q) {
 } // namespace
 
 int main() {
-    std::cout << "fft,sample_rate,block,pitch_ratio,mean_us,p99_us,deadline_us,p99_deadline_ratio\n";
+    constexpr std::array windows{
+        window_config{512U, 64U},
+        window_config{1024U, 128U},
+        window_config{1024U, 256U},
+        window_config{2048U, 256U},
+    };
+    std::cout << "fft,hop,sample_rate,block,pitch_ratio,mean_us,p99_us,deadline_us,p99_deadline_ratio\n";
 
-    for (const std::uint32_t fft : {512U, 1024U, 2048U}) {
+    for (const auto window : windows) {
         for (const std::uint32_t sample_rate : {48000U, 96000U}) {
             for (const std::uint32_t block : {32U, 64U, 128U}) {
                 for (const float pitch : {0.6674199F, 1.4983071F}) {
                     auto config = boiledegg_research_pv_rt_default_config(sample_rate, 1U, block);
-                    config.fft_size = fft;
-                    config.analysis_hop = fft / 8U;
+                    config.fft_size = window.fft;
+                    config.analysis_hop = window.hop;
                     config.mode = BOILEDEGG_RESEARCH_PV_RT_PHASE_LOCKED;
                     config.initial_pitch_ratio = pitch;
                     config.formant_mode = BOILEDEGG_RESEARCH_PV_RT_FORMANT_HARMONIC;
@@ -72,7 +84,7 @@ int main() {
                     const double mean = std::accumulate(times.begin(), times.end(), 0.0) / static_cast<double>(times.size());
                     const double p99 = quantile(times, 0.99);
                     const double deadline = 1.0e6 * static_cast<double>(block) / static_cast<double>(sample_rate);
-                    std::cout << fft << ',' << sample_rate << ',' << block << ',' << pitch << ','
+                    std::cout << window.fft << ',' << window.hop << ',' << sample_rate << ',' << block << ',' << pitch << ','
                               << std::fixed << std::setprecision(3) << mean << ',' << p99 << ','
                               << deadline << ',' << (p99 / deadline) << '\n';
 
