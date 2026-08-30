@@ -1,8 +1,8 @@
 #pragma once
 
 #include <boiled_egg/boiled_egg.h>
+#include <span>
 #include <stdexcept>
-#include <string>
 #include <utility>
 
 namespace boiled_egg {
@@ -14,6 +14,17 @@ public:
     boiledegg_result result() const noexcept { return result_; }
 private:
     boiledegg_result result_;
+};
+
+struct parameter_event : boiledegg_parameter_event {
+    static parameter_event pitch_ratio(uint32_t sample_offset, float ratio) noexcept {
+        return parameter_event{sizeof(boiledegg_parameter_event), sample_offset,
+                               BOILEDEGG_PARAMETER_PITCH_RATIO, ratio};
+    }
+    static parameter_event pitch_semitones(uint32_t sample_offset, float semitones) noexcept {
+        return parameter_event{sizeof(boiledegg_parameter_event), sample_offset,
+                               BOILEDEGG_PARAMETER_PITCH_SEMITONES, semitones};
+    }
 };
 
 class engine {
@@ -52,6 +63,13 @@ public:
     uint32_t input_latency_frames() const noexcept { return boiledegg_input_latency_frames(handle_); }
     bool drained() const noexcept { return boiledegg_is_drained(handle_) != 0; }
 
+    boiledegg_runtime_info runtime_info() const {
+        boiledegg_runtime_info info{};
+        info.struct_size = sizeof(info);
+        check(boiledegg_get_runtime_info(handle_, &info));
+        return info;
+    }
+
     uint32_t push(const float* const* input, uint32_t frames) {
         uint32_t accepted = 0;
         check(boiledegg_push(handle_, input, frames, &accepted), true);
@@ -65,6 +83,26 @@ public:
     }
 
     void flush() { check(boiledegg_flush(handle_)); }
+
+    boiledegg_result process_realtime_nothrow(
+        const float* const* input,
+        float* const* output,
+        uint32_t frames,
+        std::span<const parameter_event> events = {}) noexcept {
+        const auto* raw = events.empty()
+            ? nullptr
+            : static_cast<const boiledegg_parameter_event*>(events.data());
+        return boiledegg_process_realtime(
+            handle_, input, output, frames, raw, static_cast<uint32_t>(events.size()));
+    }
+
+    void process_realtime(
+        const float* const* input,
+        float* const* output,
+        uint32_t frames,
+        std::span<const parameter_event> events = {}) {
+        check(process_realtime_nothrow(input, output, frames, events));
+    }
 
     boiledegg_handle* native_handle() noexcept { return handle_; }
     const boiledegg_handle* native_handle() const noexcept { return handle_; }

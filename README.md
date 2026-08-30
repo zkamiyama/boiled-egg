@@ -2,7 +2,7 @@
 
 Linux-first research scaffold for a real-time pitch-shift + time-stretch SDK, with the long-term target of commercial-quality polyphonic processing.
 
-> **Status:** v0.1 research baseline. The API, realtime constraints, tests and evaluation harness are intentionally more mature than the current WSOLA-based DSP. This repository does **not** claim perceptual parity with zplane elastique yet.
+> **Status:** v0.1.1 DAW-foundation research baseline. Host/ABI/realtime contracts are intentionally being stabilized before the higher-quality DSP backend is promoted. This repository does **not** claim perceptual parity with zplane elastique yet.
 
 Canonical names: repository slug **`boiled-egg`**, CMake target/package **`boiled_egg`**, C++ namespace **`boiled_egg`**, and public C ABI prefix **`boiledegg_`**.
 
@@ -13,7 +13,8 @@ Canonical names: repository slug **`boiled-egg`**, CMake target/package **`boile
 - C++ client API: **header-only RAII wrapper** (`include/boiled_egg/boiled_egg.hpp`).
 - Public ABI uses an opaque handle plus versioned config (`struct_size`, `abi_version`).
 - STL types, exceptions, templates and C++ implementation classes never cross the binary ABI.
-- Processing API is streaming **push/pull**, because input/output block counts differ during time-scale modification.
+- Two processing contracts are exposed: fixed-I/O **`boiledegg_process_realtime()`** for DAW insert/pitch-shift use, and variable-rate **push/pull** for clip/source time stretching.
+- `boiledegg_get_runtime_info()` reports fixed realtime latency, tail, parameter quantum and capability flags for host adapters.
 
 ## Current DSP baseline
 
@@ -33,11 +34,15 @@ At 48 kHz the default input-side lookahead is 1152 frames (~24 ms). At 88.2/96 k
 
 ## Realtime contract
 
-After `boiledegg_create()`, the normal `push()` / `pull()` / parameter-setter path is designed to perform no heap allocation, locking, I/O, logging, exception propagation or thread creation. `boiled_egg_noalloc_test` checks C++ heap allocation after warm-up. ASan/UBSan and randomized dynamic automation are part of the test matrix.
+After `boiledegg_create()`, both the variable-rate streaming hot path and fixed-I/O realtime hot path are designed to perform no heap allocation, locking, I/O, logging, exception propagation or thread creation. `boiled_egg_noalloc_test` checks both paths after warm-up. ASan/UBSan, ThreadSanitizer and randomized automation are part of the test matrix.
 
-### Threading model for DAWs
+### DAW processing and threading
 
-Distinct `boiledegg_handle` instances are independent and may be processed concurrently on separate DAW worker/audio threads. On one instance, the streaming state machine (`push`/`pull`/`flush`) remains single-owner and lock-free; do not call it concurrently from multiple audio threads. Control/UI threads may update time and pitch parameters concurrently with streaming through lock-free atomic mailboxes, with changes observed at the next streaming API boundary. `reset` and `destroy` remain lifecycle operations and must be serialized with streaming. This deliberately optimizes for DAW track-level parallelism without putting mutexes on the realtime path. ThreadSanitizer plus dedicated multi-instance/control-thread tests enforce this contract.
+`boiledegg_process_realtime()` always writes exactly the host block size and introduces a fixed, block-size-independent delay reported by `boiledegg_get_runtime_info()`. The current backend treats this as a pitch-shift insert mode and requires `time_ratio == 1`; actual timeline time stretching uses the variable-rate push/pull API. Startup delay is deterministic zero padding and the reported tail equals the delay for the current finite-memory backend. Exact per-channel in-place processing is supported.
+
+Distinct `boiledegg_handle` instances are independent and may be processed concurrently on separate DAW worker/audio threads. On one instance, the DSP state machine remains single-owner and lock-free; do not call processing functions concurrently from multiple audio threads. One control/UI thread may update time/pitch parameters concurrently through lock-free atomic mailboxes. `reset` and `destroy` remain lifecycle operations and must be externally synchronized.
+
+Fixed realtime processing also accepts sorted, sample-offset parameter events so VST3/CLAP adapters do not have to discard host timestamps. The current WSOLA backend deliberately **does not** advertise `BOILEDEGG_CAP_SAMPLE_ACCURATE_AUTOMATION`; it reports a conservative `parameter_quantum_frames` instead. This keeps the ABI ready for sample-accurate backends without overstating current DSP precision. See [`docs/HOST_INTEGRATION.md`](docs/HOST_INTEGRATION.md).
 
 ## Build
 
@@ -117,10 +122,10 @@ python3 eval/make_blind_manifest.py results/external/systems
 
 Measured in this development container on Debian 13, GCC 14.2 / Clang 17, AMD EPYC 9V74 virtual CPU allocation:
 
-- 6/6 tests pass with GCC C++20.
-- 6/6 tests pass with GCC C++23.
-- 6/6 tests pass with Clang C++20.
-- 6/6 tests pass under Clang ASan + UBSan.
+- 8/8 tests pass in the current local GCC C++20 DAW-foundation checkpoint.
+- Fixed realtime host tests cover 44.1/48/96 kHz, 32/64/128/257-frame blocks, pitch automation, in-place processing, mode errors, deterministic latency and no underruns in the tested matrix.
+- ThreadSanitizer passes both parallel-instance and concurrent control/audio tests, including the fixed-I/O realtime API.
+- ASan + UBSan pass the DAW host contract test and the existing DSP regression suite.
 - Synthetic duration error: **0 frames** for the current fixed-ratio matrix.
 - 440 Hz pitch test: **220.0 Hz** at -12 st and **880.4 Hz** at +12 st (~0.79 cent error for the latter FFT measurement).
 - +12 st anti-alias regression: 14 kHz stop-band fixture is **~54.4 dB** below the 10 kHz pass-band fixture.
@@ -143,6 +148,7 @@ Start with **`docs/RESUME.md`**. It records the current architecture, commands, 
 
 Other useful documents:
 
+- `docs/HOST_INTEGRATION.md` — DAW lifecycle, PDC/tail, automation and VST3/CLAP mapping.
 - `docs/EVALUATION.md` — quality/performance matrix and listening-test plan.
 - `docs/BASELINES.md` — evaluation-only competitor integration rules.
 - `docs/LICENSING.md` — current licensing checkpoint.

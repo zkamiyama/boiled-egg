@@ -158,6 +158,62 @@ bool test_control_thread_automation() {
     return !failed.load(std::memory_order_acquire);
 }
 
+bool test_realtime_control_thread_automation() {
+    constexpr uint32_t sample_rate = 48000;
+    constexpr uint32_t block = 64;
+    auto config = boiledegg_default_config(sample_rate, 1);
+    config.max_block_size = block;
+
+    boiledegg_result create_result = BOILEDEGG_INTERNAL_ERROR;
+    boiledegg_handle* handle = boiledegg_create(&config, &create_result);
+    if (!handle || create_result != BOILEDEGG_OK) return false;
+
+    std::atomic<bool> audio_done{false};
+    std::atomic<bool> failed{false};
+    std::thread control([&] {
+        for (uint32_t i = 0; !audio_done.load(std::memory_order_acquire); ++i) {
+            const float semitones = -12.0f + static_cast<float>(i % 25u);
+            if (boiledegg_set_pitch_semitones(handle, semitones) != BOILEDEGG_OK) {
+                failed.store(true, std::memory_order_release);
+                break;
+            }
+            if (boiledegg_set_time_ratio(handle, 1.0f) != BOILEDEGG_OK) {
+                failed.store(true, std::memory_order_release);
+                break;
+            }
+            boiledegg_runtime_info info{};
+            info.struct_size = sizeof(info);
+            if (boiledegg_get_runtime_info(handle, &info) != BOILEDEGG_OK || info.realtime_latency_frames == 0) {
+                failed.store(true, std::memory_order_release);
+                break;
+            }
+        }
+    });
+
+    std::vector<float> input_storage(block), output_storage(block);
+    const float* input[1] = {input_storage.data()};
+    float* output[1] = {output_storage.data()};
+    uint64_t position = 0;
+    constexpr uint32_t calls = 2500;
+    for (uint32_t call = 0; call < calls && !failed.load(std::memory_order_acquire); ++call) {
+        for (uint32_t i = 0; i < block; ++i) {
+            input_storage[i] = static_cast<float>(0.12 * std::sin(
+                2.0 * 3.141592653589793 * 440.0 * static_cast<double>(position + i) / sample_rate));
+        }
+        const auto result = boiledegg_process_realtime(handle, input, output, block, nullptr, 0);
+        if (result != BOILEDEGG_OK) {
+            failed.store(true, std::memory_order_release);
+            break;
+        }
+        position += block;
+    }
+
+    audio_done.store(true, std::memory_order_release);
+    control.join();
+    boiledegg_destroy(handle);
+    return !failed.load(std::memory_order_acquire);
+}
+
 } // namespace
 
 int main() {
@@ -167,6 +223,10 @@ int main() {
     }
     if (!test_control_thread_automation()) {
         std::cerr << "concurrent control/audio automation test failed\n";
+        return 1;
+    }
+    if (!test_realtime_control_thread_automation()) {
+        std::cerr << "concurrent realtime control/audio automation test failed\n";
         return 1;
     }
     std::cout << "threading contract tests passed\n";

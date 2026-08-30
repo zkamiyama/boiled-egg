@@ -37,7 +37,7 @@ int main() {
         if (boiledegg_push(h,in,256,&a)!=BOILEDEGG_OK || a!=256) return 2;
         while(boiledegg_available(h)) if(boiledegg_pull(h,out,1024,&p)!=BOILEDEGG_OK) return 3;
     }
-    const auto before=allocations.load(std::memory_order_relaxed);
+    const auto streaming_before=allocations.load(std::memory_order_relaxed);
     for (int i=0;i<500;++i) {
         if (boiledegg_set_time_ratio(h, 0.8f + 0.4f * float(i%17)/16.0f) != BOILEDEGG_OK) return 4;
         if (boiledegg_set_pitch_semitones(h, -7.0f + 14.0f * float(i%19)/18.0f) != BOILEDEGG_OK) return 5;
@@ -46,7 +46,26 @@ int main() {
         if ((x!=BOILEDEGG_OK && x!=BOILEDEGG_BUFFER_FULL) || a==0) return 6;
         while(boiledegg_available(h)) if(boiledegg_pull(h,out,1024,&p)!=BOILEDEGG_OK) return 7;
     }
-    const auto after=allocations.load(std::memory_order_relaxed);
+    const auto streaming_after=allocations.load(std::memory_order_relaxed);
+    if (streaming_before != streaming_after) return 8;
+
+    if (boiledegg_set_time_ratio(h, 1.0f) != BOILEDEGG_OK || boiledegg_reset(h) != BOILEDEGG_OK) return 9;
+    float* rt_out[2] = {ol.data(), orr.data()};
+    for (int i=0;i<16;++i) {
+        if (boiledegg_process_realtime(h,in,rt_out,256,nullptr,0) != BOILEDEGG_OK) return 10;
+    }
+    const auto realtime_before=allocations.load(std::memory_order_relaxed);
+    for (int i=0;i<500;++i) {
+        boiledegg_parameter_event event{
+            sizeof(boiledegg_parameter_event),
+            static_cast<uint32_t>((i * 17) % 256),
+            BOILEDEGG_PARAMETER_PITCH_SEMITONES,
+            -7.0f + 14.0f * float(i%19)/18.0f
+        };
+        const auto x = boiledegg_process_realtime(h,in,rt_out,256,&event,1);
+        if (x != BOILEDEGG_OK) return 11;
+    }
+    const auto realtime_after=allocations.load(std::memory_order_relaxed);
     boiledegg_destroy(h);
-    return before==after ? 0 : 8;
+    return realtime_before==realtime_after ? 0 : 12;
 }

@@ -63,7 +63,7 @@ jobs:
         run: |
           cmake -S . -B build-tsan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBOILED_EGG_THREAD_SANITIZE=ON -DBOILED_EGG_BUILD_TOOLS=OFF -DBOILED_EGG_BUILD_BENCH=OFF
           cmake --build build-tsan --parallel 2
-          ctest --test-dir build-tsan --output-on-failure -R boiled_egg_threading_test
+          ctest --test-dir build-tsan --output-on-failure -R 'boiled_egg_(threading|daw_host)_test'
 
   static-package:
     runs-on: ubuntu-latest
