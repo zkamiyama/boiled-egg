@@ -65,10 +65,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build libsndfile1
           python3 -m pip install --user -r requirements-dev.txt
-      - name: Build research renderer
+      - name: Build research renderer and benchmarks
         run: |
           cmake -S research/cpp_pv_rt -B build/formant -G Ninja -DCMAKE_BUILD_TYPE=Release
-          cmake --build build/formant --target boiled_egg_pv_rt_cli boiled_egg_pv_rt_formant_bench --parallel 2
+          cmake --build build/formant --target boiled_egg_pv_rt_cli boiled_egg_pv_rt_formant_bench boiled_egg_pv_rt_window_bench --parallel 2
       - name: Pitch, duration, stereo and spectral-envelope regression
         run: python3 research/eval_formant_pitch.py --cli build/formant/boiled_egg_pv_rt_cli --output results/formant-ci
       - name: Callback p99 deadline gate
@@ -83,6 +83,18 @@ jobs:
           if worst >= 0.90:
               raise SystemExit('formant callback p99 gate failed')
           PY
+      - name: Window-size callback diagnostic
+        run: |
+          build/formant/boiled_egg_pv_rt_window_bench > results/window-callback.csv
+          python3 - <<'PY'
+          import csv
+          from pathlib import Path
+          rows=list(csv.DictReader(Path('results/window-callback.csv').open()))
+          for fft in sorted({int(r['fft']) for r in rows}):
+              group=[r for r in rows if int(r['fft']) == fft]
+              worst=max(group,key=lambda r: float(r['p99_deadline_ratio']))
+              print('fft', fft, 'worst p99/deadline', worst['p99_deadline_ratio'], 'at', worst['sample_rate'], 'Hz /', worst['block'], 'frames')
+          PY
       - name: Upload Linux renderer, source and quality reports
         uses: actions/upload-artifact@v4
         with:
@@ -93,9 +105,11 @@ jobs:
             build/formant/boiled_egg_pv_rt_cli
             results/formant-ci/report.json
             results/formant-callback.csv
+            results/window-callback.csv
             research/cpp_pv_rt/**
             research/eval_formant_pitch.py
             research/eval_elastique_pitch.py
+            research/make_blind_pitch_pack.py
             research/formant_reference.py
             research/test_formant_reference.py
 
@@ -116,6 +130,7 @@ jobs:
           research/test_formant_reference.py
           research/eval_formant_pitch.py
           research/eval_elastique_pitch.py
+          research/make_blind_pitch_pack.py
       - name: Independent offline strategy regression
         working-directory: research
         run: python3 -m unittest -v test_formant_reference.py
