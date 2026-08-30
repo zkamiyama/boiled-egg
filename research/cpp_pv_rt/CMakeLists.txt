@@ -18,11 +18,28 @@ target_compile_options(boiled_egg_research_pv_rt PRIVATE
     $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic;-Wconversion;-Wshadow>
 )
 
+add_library(boiled_egg_research_multires_rt STATIC
+    src/multires_rt.cpp
+)
+target_compile_features(boiled_egg_research_multires_rt PUBLIC cxx_std_20)
+target_include_directories(boiled_egg_research_multires_rt
+    PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+)
+target_compile_options(boiled_egg_research_multires_rt PRIVATE
+    $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic;-Wconversion;-Wshadow>
+)
+target_link_libraries(boiled_egg_research_multires_rt PUBLIC boiled_egg_research_pv_rt)
+
 if(BOILED_EGG_PV_RT_BUILD_CLI)
     add_executable(boiled_egg_pv_rt_cli src/main.cpp src/wav.cpp)
     target_compile_features(boiled_egg_pv_rt_cli PRIVATE cxx_std_20)
     target_include_directories(boiled_egg_pv_rt_cli PRIVATE include src)
     target_link_libraries(boiled_egg_pv_rt_cli PRIVATE boiled_egg_research_pv_rt)
+
+    add_executable(boiled_egg_multires_rt_cli src/multires_main.cpp src/wav.cpp)
+    target_compile_features(boiled_egg_multires_rt_cli PRIVATE cxx_std_20)
+    target_include_directories(boiled_egg_multires_rt_cli PRIVATE include src)
+    target_link_libraries(boiled_egg_multires_rt_cli PRIVATE boiled_egg_research_multires_rt)
 endif()
 
 if(BOILED_EGG_PV_RT_BUILD_TESTS)
@@ -40,6 +57,20 @@ if(BOILED_EGG_PV_RT_BUILD_TESTS)
     add_executable(boiled_egg_pv_rt_c_api_test tests/c_api.c)
     target_link_libraries(boiled_egg_pv_rt_c_api_test PRIVATE boiled_egg_research_pv_rt)
     add_test(NAME boiled_egg_pv_rt_c_api_test COMMAND boiled_egg_pv_rt_c_api_test)
+
+    add_executable(boiled_egg_multires_rt_test tests/multires_test.cpp)
+    target_compile_features(boiled_egg_multires_rt_test PRIVATE cxx_std_20)
+    target_link_libraries(boiled_egg_multires_rt_test PRIVATE boiled_egg_research_multires_rt)
+    add_test(NAME boiled_egg_multires_rt_test COMMAND boiled_egg_multires_rt_test)
+
+    add_executable(boiled_egg_multires_rt_noalloc_test tests/multires_noalloc.cpp)
+    target_compile_features(boiled_egg_multires_rt_noalloc_test PRIVATE cxx_std_20)
+    target_link_libraries(boiled_egg_multires_rt_noalloc_test PRIVATE boiled_egg_research_multires_rt)
+    add_test(NAME boiled_egg_multires_rt_noalloc_test COMMAND boiled_egg_multires_rt_noalloc_test)
+
+    add_executable(boiled_egg_multires_rt_c_api_test tests/multires_c_api.c)
+    target_link_libraries(boiled_egg_multires_rt_c_api_test PRIVATE boiled_egg_research_multires_rt)
+    add_test(NAME boiled_egg_multires_rt_c_api_test COMMAND boiled_egg_multires_rt_c_api_test)
 endif()
 
 add_executable(boiled_egg_pv_rt_bench tests/bench.cpp)
@@ -53,3 +84,7 @@ target_link_libraries(boiled_egg_pv_rt_formant_bench PRIVATE boiled_egg_research
 add_executable(boiled_egg_pv_rt_window_bench tests/window_bench.cpp)
 target_compile_features(boiled_egg_pv_rt_window_bench PRIVATE cxx_std_20)
 target_link_libraries(boiled_egg_pv_rt_window_bench PRIVATE boiled_egg_research_pv_rt)
+
+add_executable(boiled_egg_multires_rt_bench tests/multires_bench.cpp)
+target_compile_features(boiled_egg_multires_rt_bench PRIVATE cxx_std_20)
+target_link_libraries(boiled_egg_multires_rt_bench PRIVATE boiled_egg_research_multires_rt)
