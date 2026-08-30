@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(boiled_egg VERSION 0.1.1 LANGUAGES C CXX)
+project(boiled_egg VERSION 0.1.2 LANGUAGES C CXX)
 
 option(BOILED_EGG_BUILD_SHARED "Build shared library" ON)
 option(BOILED_EGG_BUILD_TESTS "Build tests" ON)
