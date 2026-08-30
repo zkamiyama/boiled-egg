@@ -54,6 +54,8 @@ int main() {
     for (int i=0;i<16;++i) {
         if (boiledegg_process_realtime(h,in,rt_out,256,nullptr,0) != BOILEDEGG_OK) return 10;
     }
+
+    // The complete host-facing hot/lifecycle surface below must not allocate.
     const auto realtime_before=allocations.load(std::memory_order_relaxed);
     for (int i=0;i<500;++i) {
         boiledegg_parameter_event event{
@@ -64,8 +66,27 @@ int main() {
         };
         const auto x = boiledegg_process_realtime(h,in,rt_out,256,&event,1);
         if (x != BOILEDEGG_OK) return 11;
+
+        if ((i % 31) == 0) {
+            boiledegg_parameter_event flush_event{
+                sizeof(boiledegg_parameter_event), 0,
+                BOILEDEGG_PARAMETER_PITCH_RATIO, 1.0f};
+            if (boiledegg_process_realtime(h,nullptr,nullptr,0,&flush_event,1) != BOILEDEGG_OK) return 12;
+
+            boiledegg_parameter_state state{};
+            state.struct_size = sizeof(state);
+            if (boiledegg_get_parameter_state(h,&state) != BOILEDEGG_OK) return 13;
+            state.time_ratio = 1.0f;
+            if (boiledegg_set_parameter_state(h,&state) != BOILEDEGG_OK) return 14;
+        }
+
+        if ((i % 97) == 0) {
+            if (boiledegg_reset(h) != BOILEDEGG_OK) return 15;
+            // Re-enter fixed-I/O mode after a realtime-safe transport reset.
+            if (boiledegg_process_realtime(h,in,rt_out,256,nullptr,0) != BOILEDEGG_OK) return 16;
+        }
     }
     const auto realtime_after=allocations.load(std::memory_order_relaxed);
     boiledegg_destroy(h);
-    return realtime_before==realtime_after ? 0 : 12;
+    return realtime_before==realtime_after ? 0 : 17;
 }

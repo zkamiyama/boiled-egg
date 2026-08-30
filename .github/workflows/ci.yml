@@ -65,6 +65,51 @@ jobs:
           cmake --build build-tsan --parallel 2
           ctest --test-dir build-tsan --output-on-failure -R 'boiled_egg_(threading|daw_host)_test'
 
+  clap-adapter:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build git
+      - name: Build self-contained CLAP 1.2.10 adapter
+        run: |
+          cmake -S . -B build-clap -G Ninja -DCMAKE_BUILD_TYPE=Release -DBOILED_EGG_BUILD_SHARED=OFF -DBOILED_EGG_BUILD_CLAP=ON -DBOILED_EGG_BUILD_TOOLS=OFF -DBOILED_EGG_BUILD_BENCH=OFF
+          cmake --build build-clap --parallel 2
+      - name: Load and exercise plugin through CLAP ABI
+        run: ctest --test-dir build-clap --output-on-failure -R boiled_egg_clap_smoke
+      - name: Verify CLAP entry and self-contained core
+        shell: bash
+        run: |
+          nm -D build-clap/adapters/clap/boiled_egg.clap | grep -E ' [BDR] clap_entry$'
+          if ldd build-clap/adapters/clap/boiled_egg.clap | grep -q 'libboiled_egg'; then
+            echo 'CLAP plugin unexpectedly depends on external libboiled_egg' >&2
+            exit 1
+          fi
+
+  vst3-adapter:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build git
+      - name: Configure VST3 SDK 3.8.0 adapter
+        run: |
+          cmake -S . -B build-vst3 -G Ninja -DCMAKE_BUILD_TYPE=Release -DBOILED_EGG_BUILD_SHARED=OFF -DBOILED_EGG_BUILD_VST3=ON -DBOILED_EGG_BUILD_TESTS=OFF -DBOILED_EGG_BUILD_TOOLS=OFF -DBOILED_EGG_BUILD_BENCH=OFF
+      - name: Build plugin and run Steinberg validator
+        run: cmake --build build-vst3 --target boiled_egg_vst3 --parallel 2
+      - name: Verify VST3 package metadata and self-contained core
+        shell: bash
+        run: |
+          PLUGIN_DIR="$(find build-vst3 -type d -name 'boiled egg.vst3' -print -quit)"
+          test -n "$PLUGIN_DIR"
+          test -f "$PLUGIN_DIR/Contents/Resources/moduleinfo.json"
+          PLUGIN_BIN="$(find "$PLUGIN_DIR" -type f -name '*.so' -print -quit)"
+          test -n "$PLUGIN_BIN"
+          if ldd "$PLUGIN_BIN" | grep -q 'libboiled_egg'; then
+            echo 'VST3 plugin unexpectedly depends on external libboiled_egg' >&2
+            exit 1
+          fi
+
   static-package:
     runs-on: ubuntu-latest
     steps:

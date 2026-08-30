@@ -1,10 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
-project(boiled_egg VERSION 0.1.1 LANGUAGES C CXX)
+project(boiled_egg VERSION 0.1.2 LANGUAGES C CXX)
 
 option(BOILED_EGG_BUILD_SHARED "Build shared library" ON)
 option(BOILED_EGG_BUILD_TESTS "Build tests" ON)
 option(BOILED_EGG_BUILD_TOOLS "Build CLI tools" ON)
 option(BOILED_EGG_BUILD_BENCH "Build benchmarks" ON)
+option(BOILED_EGG_BUILD_CLAP "Build the CLAP reference plugin adapter" OFF)
+option(BOILED_EGG_BUILD_VST3 "Build the VST3 reference plugin adapter" OFF)
 option(BOILED_EGG_SANITIZE "Enable ASan/UBSan" OFF)
 option(BOILED_EGG_THREAD_SANITIZE "Enable ThreadSanitizer" OFF)
 
@@ -46,7 +48,11 @@ target_include_directories(boiled_egg
 )
 target_compile_features(boiled_egg PUBLIC cxx_std_20)
 target_compile_definitions(boiled_egg PRIVATE BOILED_EGG_BUILDING_LIBRARY=1)
-set_target_properties(boiled_egg PROPERTIES CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES)
+set_target_properties(boiled_egg PROPERTIES
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN YES
+  POSITION_INDEPENDENT_CODE ON
+)
 
 if(MSVC)
   target_compile_options(boiled_egg PRIVATE /W4 /permissive-)
@@ -100,6 +106,14 @@ if(BOILED_EGG_BUILD_TESTS)
   add_executable(boiled_egg_daw_host_test tests/test_daw_host.cpp)
   target_link_libraries(boiled_egg_daw_host_test PRIVATE boiled_egg::boiled_egg)
   add_test(NAME boiled_egg_daw_host_test COMMAND boiled_egg_daw_host_test)
+endif()
+
+if(BOILED_EGG_BUILD_CLAP)
+  add_subdirectory(adapters/clap)
+endif()
+
+if(BOILED_EGG_BUILD_VST3)
+  add_subdirectory(adapters/vst3)
 endif()
 
 include(GNUInstallDirs)
