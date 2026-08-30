@@ -135,6 +135,40 @@ def assert_per_shift_improvement(rows: dict, candidate: str, reference: str = "o
             )
 
 
+def assert_level_stability(
+    rows: dict,
+    candidate: str,
+    reference: str = "off",
+    max_abs_rms_delta_db: float = 0.25,
+    max_peak_ratio: float = 1.40,
+) -> dict[str, float]:
+    rms_deltas = []
+    peak_ratios = []
+    for st, candidate_rms, reference_rms, candidate_peak, reference_peak in zip(
+        SHIFTS,
+        rows[candidate]["rms"],
+        rows[reference]["rms"],
+        rows[candidate]["peaks"],
+        rows[reference]["peaks"],
+    ):
+        rms_delta_db = 20.0 * math.log10((candidate_rms + 1.0e-30) / (reference_rms + 1.0e-30))
+        peak_ratio = candidate_peak / max(reference_peak, 1.0e-30)
+        rms_deltas.append(rms_delta_db)
+        peak_ratios.append(peak_ratio)
+        if abs(rms_delta_db) > max_abs_rms_delta_db:
+            raise SystemExit(
+                f"{candidate} loudness regression at {st:+d} st: {rms_delta_db:+.3f} dB vs off"
+            )
+        if peak_ratio > max_peak_ratio:
+            raise SystemExit(
+                f"{candidate} peak regression at {st:+d} st: {peak_ratio:.3f}x vs off"
+            )
+    return {
+        "max_abs_rms_delta_db": float(max(abs(value) for value in rms_deltas)),
+        "max_peak_ratio": float(max(peak_ratios)),
+    }
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--cli", type=Path, required=True)
@@ -144,7 +178,13 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
 
     fixtures = {"vowel": make_vowel(), "harmonic": make_harmonic()}
-    report: dict[str, object] = {"shifts_semitones": list(SHIFTS), "pitch": {}, "formant": {}, "stereo": {}}
+    report: dict[str, object] = {
+        "shifts_semitones": list(SHIFTS),
+        "pitch": {},
+        "formant": {},
+        "level_stability": {},
+        "stereo": {},
+    }
     for name, x in fixtures.items():
         sf.write(out / f"{name}.wav", x, SR, subtype="FLOAT")
 
@@ -165,6 +205,7 @@ def main() -> None:
         for mode in modes:
             errors = []
             peaks = []
+            rms_values = []
             for st in SHIFTS:
                 dst = out / f"{name}_{st}_{mode}.wav"
                 render(args.cli, out / f"{name}.wav", dst, st, mode)
@@ -174,10 +215,13 @@ def main() -> None:
                     raise SystemExit(f"duration regression {name} {st} {mode}: {len(y)} != {len(ref)}")
                 errors.append(env_error(ref, y))
                 peaks.append(float(np.max(np.abs(y))))
+                rms_values.append(float(np.sqrt(np.mean(y.astype(np.float64) ** 2) + 1.0e-30)))
             rows[mode] = {
                 "errors_db": errors,
                 "mean_db": float(np.mean(errors)),
+                "peaks": peaks,
                 "peak_max": float(max(peaks)),
+                "rms": rms_values,
             }
         report["formant"][name] = rows
 
@@ -192,6 +236,12 @@ def main() -> None:
     assert_per_shift_improvement(vowel, "harmonic")
     assert_per_shift_improvement(vowel, "monophonic")
     assert_per_shift_improvement(harmonic, "harmonic")
+
+    report["level_stability"] = {
+        "vowel_harmonic": assert_level_stability(vowel, "harmonic"),
+        "vowel_monophonic": assert_level_stability(vowel, "monophonic"),
+        "polyphonic_harmonic": assert_level_stability(harmonic, "harmonic"),
+    }
 
     # Linked-channel regression: formant processing must not distort a simple
     # inter-channel gain relationship when both channels carry the same source.
