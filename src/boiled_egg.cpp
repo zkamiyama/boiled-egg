@@ -85,13 +85,11 @@ bool enter_mode(boiledegg_handle* h, processing_mode desired) noexcept {
 }
 
 inline void sync_requested_parameters_streaming(boiledegg_handle* h) noexcept {
-    // Called only by the handle's single-owner streaming/lifecycle thread.
     (void)h->engine.set_time_ratio(load_ratio(h->requested_time_ratio_bits));
     (void)h->engine.set_pitch_ratio(load_ratio(h->requested_pitch_ratio_bits));
 }
 
 inline void sync_requested_parameters_realtime(boiledegg_handle* h) noexcept {
-    // Fixed-rate DAW insert mode always keeps the timeline ratio at 1.0.
     (void)h->engine.set_time_ratio(kRealtimeTimeRatio);
     (void)h->engine.set_pitch_ratio(load_ratio(h->requested_pitch_ratio_bits));
 }
@@ -123,37 +121,65 @@ bool valid_planar_output(const boiledegg_handle* h, float* const* output) noexce
     return true;
 }
 
-boiledegg_result validate_event(const boiledegg_parameter_event& event, uint32_t frames) noexcept {
-    if (event.struct_size < sizeof(boiledegg_parameter_event) || event.sample_offset >= frames) {
-        return BOILEDEGG_INVALID_ARGUMENT;
-    }
-    if (!std::isfinite(event.value)) return BOILEDEGG_INVALID_ARGUMENT;
-    switch (event.parameter_id) {
+boiledegg_result validate_parameter_value(uint32_t parameter_id, float value, bool fixed_realtime) noexcept {
+    if (!std::isfinite(value)) return BOILEDEGG_INVALID_ARGUMENT;
+    switch (parameter_id) {
         case BOILEDEGG_PARAMETER_TIME_RATIO:
-            if (std::abs(event.value - kRealtimeTimeRatio) > kRatioEpsilon) return BOILEDEGG_UNSUPPORTED_MODE;
+            if (value < 0.25f || value > 4.0f) return BOILEDEGG_INVALID_ARGUMENT;
+            if (fixed_realtime && std::abs(value - kRealtimeTimeRatio) > kRatioEpsilon) {
+                return BOILEDEGG_UNSUPPORTED_MODE;
+            }
             return BOILEDEGG_OK;
         case BOILEDEGG_PARAMETER_PITCH_RATIO:
-            return event.value >= 0.25f && event.value <= 4.0f ? BOILEDEGG_OK : BOILEDEGG_INVALID_ARGUMENT;
+            return value >= 0.25f && value <= 4.0f ? BOILEDEGG_OK : BOILEDEGG_INVALID_ARGUMENT;
         case BOILEDEGG_PARAMETER_PITCH_SEMITONES:
-            return event.value >= -24.0f && event.value <= 24.0f ? BOILEDEGG_OK : BOILEDEGG_INVALID_ARGUMENT;
+            return value >= -24.0f && value <= 24.0f ? BOILEDEGG_OK : BOILEDEGG_INVALID_ARGUMENT;
         default:
             return BOILEDEGG_INVALID_ARGUMENT;
     }
 }
 
-boiledegg_result apply_event(boiledegg_handle* h, const boiledegg_parameter_event& event) noexcept {
+boiledegg_result validate_realtime_event(const boiledegg_parameter_event& event, uint32_t frames) noexcept {
+    if (event.struct_size < sizeof(boiledegg_parameter_event) || event.sample_offset >= frames) {
+        return BOILEDEGG_INVALID_ARGUMENT;
+    }
+    return validate_parameter_value(event.parameter_id, event.value, true);
+}
+
+boiledegg_result validate_parameter_only_event(
+    const boiledegg_parameter_event& event,
+    bool fixed_realtime) noexcept {
+    if (event.struct_size < sizeof(boiledegg_parameter_event) || event.sample_offset != 0) {
+        return BOILEDEGG_INVALID_ARGUMENT;
+    }
+    return validate_parameter_value(event.parameter_id, event.value, fixed_realtime);
+}
+
+void store_event_mailbox(boiledegg_handle* h, const boiledegg_parameter_event& event) noexcept {
     switch (event.parameter_id) {
         case BOILEDEGG_PARAMETER_TIME_RATIO:
-            store_ratio(h->requested_time_ratio_bits, kRealtimeTimeRatio);
-            return h->engine.set_time_ratio(kRealtimeTimeRatio);
+            store_ratio(h->requested_time_ratio_bits, event.value);
+            break;
         case BOILEDEGG_PARAMETER_PITCH_RATIO:
             store_ratio(h->requested_pitch_ratio_bits, event.value);
+            break;
+        case BOILEDEGG_PARAMETER_PITCH_SEMITONES:
+            store_ratio(h->requested_pitch_ratio_bits, std::pow(2.0f, event.value / 12.0f));
+            break;
+        default:
+            break;
+    }
+}
+
+boiledegg_result apply_event_realtime(boiledegg_handle* h, const boiledegg_parameter_event& event) noexcept {
+    store_event_mailbox(h, event);
+    switch (event.parameter_id) {
+        case BOILEDEGG_PARAMETER_TIME_RATIO:
+            return h->engine.set_time_ratio(kRealtimeTimeRatio);
+        case BOILEDEGG_PARAMETER_PITCH_RATIO:
             return h->engine.set_pitch_ratio(event.value);
-        case BOILEDEGG_PARAMETER_PITCH_SEMITONES: {
-            const float ratio = std::pow(2.0f, event.value / 12.0f);
-            store_ratio(h->requested_pitch_ratio_bits, ratio);
-            return h->engine.set_pitch_ratio(ratio);
-        }
+        case BOILEDEGG_PARAMETER_PITCH_SEMITONES:
+            return h->engine.set_pitch_ratio(std::pow(2.0f, event.value / 12.0f));
         default:
             return BOILEDEGG_INVALID_ARGUMENT;
     }
@@ -223,7 +249,7 @@ boiledegg_config boiledegg_default_config(uint32_t sample_rate, uint32_t channel
 }
 
 uint32_t boiledegg_abi_version(void) { return BOILEDEGG_ABI_VERSION; }
-const char* boiledegg_version_string(void) { return "0.1.1-daw-foundation"; }
+const char* boiledegg_version_string(void) { return "0.1.2-daw-foundation"; }
 
 const char* boiledegg_result_string(boiledegg_result r) {
     switch (r) {
@@ -302,6 +328,58 @@ float boiledegg_get_pitch_ratio(const boiledegg_handle* h) {
     return h ? load_ratio(h->requested_pitch_ratio_bits) : 0.0f;
 }
 
+boiledegg_result boiledegg_apply_parameter_events(
+    boiledegg_handle* h,
+    const boiledegg_parameter_event* events,
+    uint32_t event_count) {
+    if (!h) return BOILEDEGG_INVALID_ARGUMENT;
+    if (event_count > 0 && !events) return BOILEDEGG_INVALID_ARGUMENT;
+    const bool fixed_realtime = load_mode(h) == processing_mode::realtime;
+    for (uint32_t i = 0; i < event_count; ++i) {
+        const auto result = validate_parameter_only_event(events[i], fixed_realtime);
+        if (result != BOILEDEGG_OK) return result;
+    }
+    for (uint32_t i = 0; i < event_count; ++i) {
+        store_event_mailbox(h, events[i]);
+    }
+    return BOILEDEGG_OK;
+}
+
+boiledegg_result boiledegg_get_parameter_state(
+    const boiledegg_handle* h,
+    boiledegg_parameter_state* out_state) {
+    if (!h || !out_state || out_state->struct_size < sizeof(boiledegg_parameter_state)) {
+        return BOILEDEGG_INVALID_ARGUMENT;
+    }
+    out_state->time_ratio = load_ratio(h->requested_time_ratio_bits);
+    out_state->pitch_ratio = load_ratio(h->requested_pitch_ratio_bits);
+    out_state->reserved = 0;
+    return BOILEDEGG_OK;
+}
+
+boiledegg_result boiledegg_set_parameter_state(
+    boiledegg_handle* h,
+    const boiledegg_parameter_state* state) {
+    if (!h || !state || state->struct_size < sizeof(boiledegg_parameter_state)) {
+        return BOILEDEGG_INVALID_ARGUMENT;
+    }
+    if (!std::isfinite(state->time_ratio) || state->time_ratio < 0.25f || state->time_ratio > 4.0f ||
+        !std::isfinite(state->pitch_ratio) || state->pitch_ratio < 0.25f || state->pitch_ratio > 4.0f) {
+        return BOILEDEGG_INVALID_ARGUMENT;
+    }
+    const bool non_realtime_ratio = std::abs(state->time_ratio - kRealtimeTimeRatio) > kRatioEpsilon;
+    if (non_realtime_ratio && load_mode(h) == processing_mode::realtime) {
+        return BOILEDEGG_UNSUPPORTED_MODE;
+    }
+    store_ratio(h->requested_time_ratio_bits, state->time_ratio);
+    store_ratio(h->requested_pitch_ratio_bits, state->pitch_ratio);
+    if (non_realtime_ratio && load_mode(h) == processing_mode::realtime) {
+        store_ratio(h->requested_time_ratio_bits, kRealtimeTimeRatio);
+        return BOILEDEGG_UNSUPPORTED_MODE;
+    }
+    return BOILEDEGG_OK;
+}
+
 boiledegg_result boiledegg_push(boiledegg_handle* h, const float* const* in, uint32_t frames, uint32_t* accepted) {
     if (!h || !accepted) return BOILEDEGG_INVALID_ARGUMENT;
     if (!enter_mode(h, processing_mode::streaming)) return BOILEDEGG_INVALID_STATE;
@@ -339,7 +417,7 @@ boiledegg_result boiledegg_process_realtime(
     const boiledegg_parameter_event* events,
     uint32_t event_count) {
     if (!h) return BOILEDEGG_INVALID_ARGUMENT;
-    if (frames == 0) return event_count == 0 ? BOILEDEGG_OK : BOILEDEGG_INVALID_ARGUMENT;
+    if (frames == 0) return boiledegg_apply_parameter_events(h, events, event_count);
     if (frames > h->max_block_size || !valid_planar_input(h, input) || !valid_planar_output(h, output)) {
         return BOILEDEGG_INVALID_ARGUMENT;
     }
@@ -347,16 +425,25 @@ boiledegg_result boiledegg_process_realtime(
 
     uint32_t previous_offset = 0;
     for (uint32_t i = 0; i < event_count; ++i) {
-        const boiledegg_result event_result = validate_event(events[i], frames);
+        const boiledegg_result event_result = validate_realtime_event(events[i], frames);
         if (event_result != BOILEDEGG_OK) return event_result;
         if (i > 0 && events[i].sample_offset < previous_offset) return BOILEDEGG_INVALID_ARGUMENT;
         previous_offset = events[i].sample_offset;
     }
 
+    const processing_mode before = load_mode(h);
+    if (before == processing_mode::none &&
+        std::abs(load_ratio(h->requested_time_ratio_bits) - kRealtimeTimeRatio) > kRatioEpsilon) {
+        return BOILEDEGG_UNSUPPORTED_MODE;
+    }
     if (!enter_mode(h, processing_mode::realtime)) return BOILEDEGG_INVALID_STATE;
-    const float requested_time = load_ratio(h->requested_time_ratio_bits);
-    if (std::abs(requested_time - kRealtimeTimeRatio) > kRatioEpsilon) return BOILEDEGG_UNSUPPORTED_MODE;
 
+    // A control-thread time-ratio setter can race the first realtime mode
+    // transition. The setter will report UNSUPPORTED_MODE; do not make the
+    // audio callback fail transiently because of that race.
+    if (std::abs(load_ratio(h->requested_time_ratio_bits) - kRealtimeTimeRatio) > kRatioEpsilon) {
+        store_ratio(h->requested_time_ratio_bits, kRealtimeTimeRatio);
+    }
     sync_requested_parameters_realtime(h);
 
     boiledegg_result overall = BOILEDEGG_OK;
@@ -371,7 +458,7 @@ boiledegg_result boiledegg_process_realtime(
             cursor = event_offset;
         }
         while (event_index < event_count && events[event_index].sample_offset == cursor) {
-            const boiledegg_result event_result = apply_event(h, events[event_index]);
+            const boiledegg_result event_result = apply_event_realtime(h, events[event_index]);
             if (event_result != BOILEDEGG_OK) return event_result;
             ++event_index;
         }
@@ -399,7 +486,10 @@ boiledegg_result boiledegg_get_runtime_info(const boiledegg_handle* h, boiledegg
                              BOILEDEGG_CAP_CONTROL_THREAD_PARAMETERS |
                              BOILEDEGG_CAP_FIXED_REALTIME_IO |
                              BOILEDEGG_CAP_SAMPLE_OFFSET_EVENTS |
-                             BOILEDEGG_CAP_IN_PLACE_REALTIME_IO;
+                             BOILEDEGG_CAP_IN_PLACE_REALTIME_IO |
+                             BOILEDEGG_CAP_REALTIME_RESET |
+                             BOILEDEGG_CAP_HARD_REALTIME_PROCESSING |
+                             BOILEDEGG_CAP_PARAMETER_ONLY_FLUSH;
     return BOILEDEGG_OK;
 }
 
