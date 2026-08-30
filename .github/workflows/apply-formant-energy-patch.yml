@@ -1,0 +1,33 @@
+name: apply-formant-energy-patch
+
+on:
+  push:
+    branches: ["research/formant-v0.3-integrated"]
+    paths:
+      - "research/patches/formant_energy_center.patch"
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply source patch
+        run: git apply --check research/patches/formant_energy_center.patch && git apply research/patches/formant_energy_center.patch
+      - name: Build and unit-test patched backend
+        run: |
+          cmake -S research/cpp_pv_rt -B build/patch-verify -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/patch-verify --parallel 2
+          ctest --test-dir build/patch-verify --output-on-failure
+      - name: Commit verified source and remove one-shot machinery
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/cpp_pv_rt/src/pv_rt.cpp
+          git rm research/patches/formant_energy_center.patch .github/workflows/apply-formant-energy-patch.yml
+          git commit -m "Center formant EQ energy without broadband gain"
+          git push origin HEAD:${GITHUB_REF_NAME}
