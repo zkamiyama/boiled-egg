@@ -179,6 +179,7 @@ public:
         flushed_ = false;
         flux_mean_ = 0.0F;
         flux_variance_ = 0.0F;
+        formant_energy_compensation_ = 1.0F;
         target_pv_frames_ = std::numeric_limits<std::uint64_t>::max();
         target_output_frames_ = std::numeric_limits<std::uint64_t>::max();
     }
@@ -325,7 +326,10 @@ private:
     void estimate_formant_gain() noexcept {
         std::fill(formant_gain_.begin(), formant_gain_.end(), 1.0F);
         if (formant_mode_ == BOILEDEGG_RESEARCH_PV_RT_FORMANT_OFF ||
-            std::abs(pitch_ratio_ - 1.0F) < 1.0e-6F || formant_gain_limit_db_ <= 0.0F) return;
+            std::abs(pitch_ratio_ - 1.0F) < 1.0e-6F || formant_gain_limit_db_ <= 0.0F) {
+            formant_energy_compensation_ = 1.0F;
+            return;
+        }
 
         for (std::uint32_t k = 0; k < bins_; ++k)
             envelope_work_[k] = {std::log(std::max(linked_magnitude_[k], 1.0e-7F)), 0.0F};
@@ -405,6 +409,39 @@ private:
             }
             formant_gain_[k] = std::exp(gain_db * weight * neper_per_db);
         }
+
+        // Centre the formant EQ around 0 dB in a magnitude-squared weighted
+        // log domain, then remove any remaining positive broadband power gain.
+        // This keeps the relative envelope shape while avoiding the large
+        // programme-level boosts/attenuations produced by a one-sided power
+        // limiter. The scalar is linked across channels, preserving stereo.
+        double input_energy = k_epsilon;
+        double weighted_log_gain = 0.0;
+        for (std::uint32_t k = 0; k < bins_; ++k) {
+            const double symmetry = (k == 0U || k + 1U == bins_) ? 1.0 : 2.0;
+            const double magnitude = static_cast<double>(linked_magnitude_[k]);
+            const double weight_energy = symmetry * magnitude * magnitude;
+            input_energy += weight_energy;
+            weighted_log_gain += weight_energy *
+                std::log(std::max(static_cast<double>(formant_gain_[k]), 1.0e-12));
+        }
+        const float log_centre = static_cast<float>(std::exp(-weighted_log_gain / input_energy));
+        for (float& gain : formant_gain_) gain *= log_centre;
+
+        double corrected_energy = k_epsilon;
+        for (std::uint32_t k = 0; k < bins_; ++k) {
+            const double symmetry = (k == 0U || k + 1U == bins_) ? 1.0 : 2.0;
+            const double magnitude = static_cast<double>(linked_magnitude_[k]);
+            const double corrected = magnitude * static_cast<double>(formant_gain_[k]);
+            corrected_energy += symmetry * corrected * corrected;
+        }
+        float power_compensation = 1.0F;
+        if (corrected_energy > input_energy) {
+            power_compensation = static_cast<float>(std::sqrt(input_energy / corrected_energy));
+            power_compensation = std::clamp(power_compensation, 0.25F, 1.0F);
+        }
+        formant_energy_compensation_ = log_centre * power_compensation;
+        for (float& gain : formant_gain_) gain *= power_compensation;
     }
 
     void process_frame() noexcept {
@@ -610,6 +647,7 @@ private:
     std::uint64_t pv_start_{}, pv_write_{}, fifo_read_{}, fifo_write_{}, fifo_count_{}, target_pv_frames_{}, target_output_frames_{};
     bool initialized_{}, flushed_{};
     float flux_mean_{}, flux_variance_{};
+    float formant_energy_compensation_{1.0F};
 };
 
 } // namespace boiled_egg::research::detail
