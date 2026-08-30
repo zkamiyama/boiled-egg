@@ -55,6 +55,31 @@ Paired directly against the hop-128 realtime wrapper over the same 60 conditions
 
 Exact output duration remained correct in **60 / 60** target-range renders.
 
+## Paired profile comparison
+
+The same 60 conditions were also compared directly against the current manual-profile candidates.
+
+### Multi-resolution vs General (2048 / hop 256)
+
+- mean broad-envelope change: **-0.482 dB** (multi-resolution lower error);
+- envelope wins: **46 / 60**;
+- mean onset-correlation change: **+0.166**;
+- onset wins: **56 / 60**;
+- 95th-percentile peak ratio: about **1.16x**.
+
+The onset improvement appears in every source category: solo, voice, mix and polyphonic.
+
+### Multi-resolution vs Transient (1024 / hop 256)
+
+- mean broad-envelope change: **+0.0014 dB** (effectively equal);
+- envelope wins: **19 / 60**;
+- mean onset-correlation change: **+0.0137**;
+- onset wins: **49 / 60**;
+- 95th-percentile peak ratio: about **1.045x**;
+- maximum peak ratio in the paired target-range set: about **1.13x**.
+
+This is the most encouraging comparison so far: the multi-resolution candidate is effectively tied with the Transient profile on the broad spectral-envelope diagnostic while improving the onset diagnostic in roughly 82% of the target-range conditions. It therefore looks more like a higher-quality transient path than a replacement for the cheaper Transient mode. Blind listening remains required before assigning it a product-facing profile name.
+
 ## Low-frequency tonal safety
 
 A deterministic 48 kHz test renders 55, 80, 120, 220 and 440 Hz fundamentals at -12, +7 and +12 semitones through the complete realtime multi-resolution wrapper.
@@ -101,8 +126,8 @@ Before the realtime wrapper existed, an offline experiment combined 1024/256 wit
 
 Do not promote multi-resolution to the product core yet. Next gates are:
 
-1. complete GitHub CI for GCC/Clang C++20/23, ASan/UBSan, pure-C API, no-allocation and tonal safety after the hop-192 change;
-2. archive repeated 48/96 kHz callback CPU/wall diagnostics;
-3. build a blind listening pack that includes the realtime multi-resolution candidate, General, Transient and the derived-Elastique diagnostic;
-4. inspect the remaining +/-12 peak outliers and listen for crossover coloration or high-band phase texture;
+1. keep GitHub CI green for GCC/Clang C++20/23, ASan/UBSan, pure-C API, no-allocation, tonal safety and callback diagnostics;
+2. run the reproducible four-way blind listening pack: General, Transient, multi-resolution and the derived-Elastique diagnostic;
+3. inspect the remaining +/-12 peak outliers and listen for crossover coloration or high-band phase texture;
+4. choose whether multi-resolution becomes a new explicit high-quality/transient profile or remains an internal research backend;
 5. separately attack the >+12-st stress peak pathology before considering a wider pitch range.
