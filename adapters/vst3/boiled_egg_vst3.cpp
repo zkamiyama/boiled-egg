@@ -273,12 +273,12 @@ BEGIN_FACTORY_DEF("zkamiyama", "https://github.com/zkamiyama/boiled-egg", "")
 
 DEF_CLASS2(INLINE_UID(0x9C23D6A1, 0x6E0B4F86, 0xA5C74C2B, 0x7D13F521),
            Steinberg::PClassInfo::kManyInstances,
-           Steinberg::Vst::kVstAudioEffectClass,
+           kVstAudioEffectClass,
            "boiled egg",
            0,
            "Fx|Pitch Shift",
            "0.1.2",
-           Steinberg::Vst::kVstVersionString,
+           kVstVersionString,
            Steinberg::Vst::BoiledEggVst3::createInstance)
 
 END_FACTORY
