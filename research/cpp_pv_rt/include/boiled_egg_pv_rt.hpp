@@ -27,6 +27,9 @@ public:
         return *this;
     }
     void set_time_ratio(float ratio) { check(boiledegg_research_pv_rt_set_time_ratio(handle_, ratio)); }
+    void set_pitch_ratio(float ratio) { check(boiledegg_research_pv_rt_set_pitch_ratio(handle_, ratio)); }
+    [[nodiscard]] float time_ratio() const noexcept { return boiledegg_research_pv_rt_get_time_ratio(handle_); }
+    [[nodiscard]] float pitch_ratio() const noexcept { return boiledegg_research_pv_rt_get_pitch_ratio(handle_); }
     void push(const float* const* input, uint32_t frames) { check(boiledegg_research_pv_rt_push(handle_, input, frames)); }
     uint32_t pull(float* const* output, uint32_t frames) noexcept { return boiledegg_research_pv_rt_pull(handle_, output, frames); }
     void flush() { check(boiledegg_research_pv_rt_flush(handle_)); }
