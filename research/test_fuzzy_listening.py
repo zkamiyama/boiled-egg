@@ -46,9 +46,16 @@ class ListeningTests(unittest.TestCase):
     def test_audio_hash_and_output_replacement_refused(self):
         a,_=self.make()
         with self.assertRaises(ValueError):self.make()
-        next((self.evaluation/'renders').rglob('*.wav')).write_bytes(b'tampered')
+        # Filesystem enumeration order is unspecified; General is not in this pack.
+        # Corrupt an explicitly selected exact-grid candidate, not the first WAV.
+        (self.evaluation/'renders/C0001/fuzzy_harmonic.wav').write_bytes(b'tampered')
         with self.assertRaises(ValueError):self.make(name='bad')
         self.assertFalse((self.root/'bad').exists())
+    def test_unselected_general_audio_is_not_in_candidate_pack(self):
+        (self.evaluation/'renders/C0001/general_harmonic.wav').write_bytes(b'unselected')
+        _,result=self.make()
+        self.assertEqual(result['trials'],6)
+        self.assertNotIn('general',result['profiles'])
     @unittest.skipUnless(shutil.which('node'),'Node needed for actual export')
     def test_javascript_export_decodes_against_key(self):
         a,r=self.make();script=(a/'listener/index.html').read_text().split('<script>')[1].split('</script>')[0]
