@@ -1,5 +1,6 @@
 #include "boiled_egg_pv_rt.h"
 #include "fft.hpp"
+#include "fuzzy_phase.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -122,7 +123,9 @@ public:
           previous_output_phase_(static_cast<std::size_t>(channels_) * bins_), output_phase_(static_cast<std::size_t>(channels_) * bins_),
           linked_magnitude_(bins_), previous_linked_magnitude_(bins_),
           fft_work_(static_cast<std::size_t>(channels_) * n_fft_), envelope_work_(n_fft_),
-          log_envelope_(bins_), formant_gain_(bins_, 1.0F), peaks_(bins_), owners_(bins_) {
+          log_envelope_(bins_), formant_gain_(bins_, 1.0F), peaks_(bins_), owners_(bins_),
+          fuzzy_(config.mode >= BOILEDEGG_RESEARCH_PV_RT_FUZZY ? bins_ : 0U,
+                 n_fft_, sample_rate_) {
         const float scale = 2.0F * std::numbers::pi_v<float> / static_cast<float>(n_fft_);
         for (std::uint32_t i = 0; i < n_fft_; ++i) {
             window_[i] = std::sqrt(0.5F - 0.5F * std::cos(scale * static_cast<float>(i)));
@@ -138,7 +141,7 @@ public:
                c.sample_rate >= 8000U && c.sample_rate <= 384000U && c.channels >= 1U && c.channels <= 8U &&
                c.max_block_frames >= 1U && c.max_block_frames <= 16384U && power_of_two(c.fft_size) &&
                c.fft_size <= 16384U && c.analysis_hop >= 1U && c.analysis_hop <= c.fft_size / 2U &&
-               c.mode <= BOILEDEGG_RESEARCH_PV_RT_TRANSIENT && finite_ratio(c.initial_time_ratio) &&
+               c.mode <= BOILEDEGG_RESEARCH_PV_RT_FUZZY_NOISE && finite_ratio(c.initial_time_ratio) &&
                finite_ratio(c.initial_pitch_ratio) && std::isfinite(c.transient_floor) && c.transient_floor >= 0.0F &&
                std::isfinite(c.transient_sigma) && c.transient_sigma >= 0.0F &&
                c.formant_mode <= BOILEDEGG_RESEARCH_PV_RT_FORMANT_MONOPHONIC &&
@@ -150,6 +153,7 @@ public:
     }
 
     void reset() noexcept {
+        fuzzy_.reset();
         std::fill(input_.begin(), input_.end(), 0.0F);
         std::fill(ola_.begin(), ola_.end(), 0.0F);
         std::fill(weight_.begin(), weight_.end(), 0.0F);
@@ -481,7 +485,16 @@ private:
         if (mode_ != BOILEDEGG_RESEARCH_PV_RT_CLASSIC) find_peaks();
         const std::uint64_t previous_synth = previous_synth_start_;
         const float synthesis_hop = initialized_ ? static_cast<float>(synth_start - previous_synth) : 0.0F;
+        const bool fuzzy_mode = mode_ >= BOILEDEGG_RESEARCH_PV_RT_FUZZY;
+        if (fuzzy_mode) {
+            fuzzy_.process(linked_magnitude_.data(), previous_linked_magnitude_.data(),
+                magnitude_.data(), phase_.data(), previous_phase_.data(), owners_.data(),
+                omega_.data(), channels_, analysis_hop_, synthesis_hop,
+                static_cast<float>(internal_stretch()), initialized_,
+                mode_ == BOILEDEGG_RESEARCH_PV_RT_FUZZY, output_phase_.data());
+        }
         for (std::uint32_t ch = 0; ch < channels_; ++ch) {
+            if (!fuzzy_mode) {
             for (std::uint32_t k = 0; k < bins_; ++k) {
                 const std::size_t idx = static_cast<std::size_t>(ch) * bins_ + k;
                 if (!initialized_ || transient) {
@@ -499,6 +512,7 @@ private:
                     const std::size_t owner_idx = static_cast<std::size_t>(ch) * bins_ + owner;
                     output_phase_[idx] = output_phase_[owner_idx] + wrap_phase(phase_[idx] - phase_[owner_idx]);
                 }
+            }
             }
             auto* work = fft_work_.data() + static_cast<std::size_t>(ch) * n_fft_;
             for (std::uint32_t k = 0; k < bins_; ++k) {
@@ -641,6 +655,7 @@ private:
     std::vector<std::complex<float>> fft_work_, envelope_work_;
     std::vector<float> log_envelope_, formant_gain_;
     std::vector<std::uint32_t> peaks_, owners_;
+    fuzzy_phase fuzzy_;
     std::uint32_t peak_count_{};
     std::uint64_t input_write_{}, analysis_start_{}, previous_synth_start_{}, latest_safe_position_{}, cleanup_position_{}, startup_crop_{}, real_input_frames_{}, pv_emitted_frames_{}, emitted_frames_{};
     double synthesis_position_{}, expected_pv_frames_{}, expected_output_frames_{}, resample_pos_{};

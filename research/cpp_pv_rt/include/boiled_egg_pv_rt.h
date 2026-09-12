@@ -25,7 +25,10 @@ typedef enum boiledegg_research_pv_rt_result {
 typedef enum boiledegg_research_pv_rt_mode {
     BOILEDEGG_RESEARCH_PV_RT_CLASSIC = 0,
     BOILEDEGG_RESEARCH_PV_RT_PHASE_LOCKED = 1,
-    BOILEDEGG_RESEARCH_PV_RT_TRANSIENT = 2
+    BOILEDEGG_RESEARCH_PV_RT_TRANSIENT = 2,
+    /* Causal experimental modes; no preset/default changes. Not full 2017 FPV. */
+    BOILEDEGG_RESEARCH_PV_RT_FUZZY = 3,
+    BOILEDEGG_RESEARCH_PV_RT_FUZZY_NOISE = 4
 } boiledegg_research_pv_rt_mode;
 
 /*
