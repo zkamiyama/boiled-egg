@@ -1,4 +1,5 @@
 #include "boiled_egg_pv_rt.h"
+#include "fuzzy_median_checks.hpp"
 #include "../src/fuzzy_phase.hpp"
 
 #include <algorithm>
@@ -127,7 +128,7 @@ void linked_spectral_test() {
 
 int main() {
     try {
-        membership_tests(); linked_spectral_test();
+        fuzzy_median_regression(); membership_tests(); linked_spectral_test();
         const auto x = source(12013, 2);
         for (auto mode : {BOILEDEGG_RESEARCH_PV_RT_FUZZY, BOILEDEGG_RESEARCH_PV_RT_FUZZY_NOISE}) {
             for (std::uint32_t formant : {0U, 1U, 2U}) {
