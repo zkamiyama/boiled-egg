@@ -1,0 +1,109 @@
+--- a/research/cpp_pv_rt/CMakeLists.txt
++++ b/research/cpp_pv_rt/CMakeLists.txt
+@@ -3,6 +3,12 @@
+ 
+ option(BOILED_EGG_PV_RT_BUILD_TESTS "Build tests" ON)
+ option(BOILED_EGG_PV_RT_BUILD_CLI "Build CLI" ON)
++option(BOILED_EGG_PV_RT_OVERLAP_GUARD "Research: cap synthesis hop to maintain overlap" OFF)
++set(BOILED_EGG_PV_RT_MAX_SYNTHESIS_HOP_PERCENT "75" CACHE STRING "Research overlap-guard hop cap: 50 or 75 percent")
++set_property(CACHE BOILED_EGG_PV_RT_MAX_SYNTHESIS_HOP_PERCENT PROPERTY STRINGS 50 75)
++if(NOT BOILED_EGG_PV_RT_MAX_SYNTHESIS_HOP_PERCENT MATCHES "^(50|75)$")
++    message(FATAL_ERROR "MAX_SYNTHESIS_HOP_PERCENT must be 50 or 75")
++endif()
+ 
+ add_library(boiled_egg_research_pv_rt STATIC
+     src/fft.cpp
+@@ -10,6 +16,11 @@
+     src/pv_rt.cpp
+ )
+ target_compile_features(boiled_egg_research_pv_rt PUBLIC cxx_std_20)
++if(BOILED_EGG_PV_RT_OVERLAP_GUARD)
++    target_compile_definitions(boiled_egg_research_pv_rt PRIVATE
++        BOILED_EGG_PV_RT_OVERLAP_GUARD=1
++        BOILED_EGG_PV_RT_MAX_SYNTHESIS_HOP_PERCENT=${BOILED_EGG_PV_RT_MAX_SYNTHESIS_HOP_PERCENT})
++endif()
+ target_include_directories(boiled_egg_research_pv_rt
+     PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
+@@ -44,6 +55,12 @@
+ 
+ if(BOILED_EGG_PV_RT_BUILD_TESTS)
+     enable_testing()
++    if(BOILED_EGG_PV_RT_OVERLAP_GUARD)
++        add_executable(boiled_egg_overlap_guard_test tests/overlap_guard.cpp)
++        target_compile_features(boiled_egg_overlap_guard_test PRIVATE cxx_std_20)
++        target_link_libraries(boiled_egg_overlap_guard_test PRIVATE boiled_egg_research_multires_rt)
++        add_test(NAME boiled_egg_overlap_guard_test COMMAND boiled_egg_overlap_guard_test)
++    endif()
+     add_executable(boiled_egg_pv_rt_test tests/test.cpp)
+     target_compile_features(boiled_egg_pv_rt_test PRIVATE cxx_std_20)
+     target_link_libraries(boiled_egg_pv_rt_test PRIVATE boiled_egg_research_pv_rt)
+--- a/research/cpp_pv_rt/src/pv_rt.cpp
++++ b/research/cpp_pv_rt/src/pv_rt.cpp
+@@ -160,6 +160,7 @@
+         std::fill(previous_linked_magnitude_.begin(), previous_linked_magnitude_.end(), 0.0F);
+         input_write_ = n_fft_ / 2U;
+         analysis_start_ = 0;
++        previous_analysis_start_ = 0;
+         synthesis_position_ = 0.0;
+         latest_safe_position_ = 0;
+         cleanup_position_ = 0;
+@@ -481,14 +482,23 @@
+         if (mode_ != BOILEDEGG_RESEARCH_PV_RT_CLASSIC) find_peaks();
+         const std::uint64_t previous_synth = previous_synth_start_;
+         const float synthesis_hop = initialized_ ? static_cast<float>(synth_start - previous_synth) : 0.0F;
++#ifdef BOILED_EGG_PV_RT_OVERLAP_GUARD
++        // Phase estimation must use the actual preceding input stride when
++        // the overlap guard changes the hop. The first frame does not use it.
++        const float analysis_delta = initialized_
++            ? static_cast<float>(analysis_start_ - previous_analysis_start_)
++            : static_cast<float>(analysis_hop_);
++#else
++        const float analysis_delta = static_cast<float>(analysis_hop_);
++#endif
+         for (std::uint32_t ch = 0; ch < channels_; ++ch) {
+             for (std::uint32_t k = 0; k < bins_; ++k) {
+                 const std::size_t idx = static_cast<std::size_t>(ch) * bins_ + k;
+                 if (!initialized_ || transient) {
+                     output_phase_[idx] = phase_[idx];
+                 } else {
+-                    const float delta = wrap_phase(phase_[idx] - previous_phase_[idx] - omega_[k] * static_cast<float>(analysis_hop_));
+-                    const float instantaneous = omega_[k] + delta / static_cast<float>(analysis_hop_);
++                    const float delta = wrap_phase(phase_[idx] - previous_phase_[idx] - omega_[k] * analysis_delta);
++                    const float instantaneous = omega_[k] + delta / analysis_delta;
+                     output_phase_[idx] = previous_output_phase_[idx] + instantaneous * synthesis_hop;
+                 }
+             }
+@@ -534,8 +544,21 @@
+             initialized_ = true;
+         }
+         previous_synth_start_ = synth_start;
+-        synthesis_position_ += static_cast<double>(analysis_hop_) * internal_stretch();
+-        analysis_start_ += analysis_hop_;
++        std::uint32_t next_hop = analysis_hop_;
++#ifdef BOILED_EGG_PV_RT_OVERLAP_GUARD
++        // Research-only opt-in: bound synthesis hop by 50% or 75% of the
++        // window. The 75% cap leaves the +/-12-st profiles' hops unchanged.
++        // This prevents sparse OLA weights at large time*pitch ratios;
++        // it is not a limiter and does not promise a bounded output peak.
++        const auto overlap_hop = static_cast<std::uint32_t>(std::max(
++            1.0, std::floor((static_cast<double>(n_fft_) *
++                static_cast<double>(BOILED_EGG_PV_RT_MAX_SYNTHESIS_HOP_PERCENT) / 100.0)
++                / internal_stretch())));
++        next_hop = std::min(next_hop, overlap_hop);
++#endif
++        previous_analysis_start_ = analysis_start_;
++        synthesis_position_ += static_cast<double>(next_hop) * internal_stretch();
++        analysis_start_ += next_hop;
+     }
+ 
+     [[nodiscard]] std::uint64_t pv_count() const noexcept { return pv_write_ - pv_start_; }
+@@ -642,7 +665,7 @@
+     std::vector<float> log_envelope_, formant_gain_;
+     std::vector<std::uint32_t> peaks_, owners_;
+     std::uint32_t peak_count_{};
+-    std::uint64_t input_write_{}, analysis_start_{}, previous_synth_start_{}, latest_safe_position_{}, cleanup_position_{}, startup_crop_{}, real_input_frames_{}, pv_emitted_frames_{}, emitted_frames_{};
++    std::uint64_t input_write_{}, analysis_start_{}, previous_analysis_start_{}, previous_synth_start_{}, latest_safe_position_{}, cleanup_position_{}, startup_crop_{}, real_input_frames_{}, pv_emitted_frames_{}, emitted_frames_{};
+     double synthesis_position_{}, expected_pv_frames_{}, expected_output_frames_{}, resample_pos_{};
+     std::uint64_t pv_start_{}, pv_write_{}, fifo_read_{}, fifo_write_{}, fifo_count_{}, target_pv_frames_{}, target_output_frames_{};
+     bool initialized_{}, flushed_{};
