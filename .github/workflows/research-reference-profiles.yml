@@ -50,5 +50,5 @@ jobs:
         run: |
           export BOILED_EGG_PV_CLI="$PWD/build/boiled_egg_pv_rt_cli"
           export BOILED_EGG_MULTIRES_CLI="$PWD/build/boiled_egg_multires_rt_cli"
-          python -m py_compile research/eval_reference_profiles.py research/make_reference_profile_pack.py research/summarize_profile_ratings.py
-          python -W error::ResourceWarning -m unittest -v research/test_reference_profiles.py research/test_blind_multires_pack.py research/test_peak_outliers.py
+          python -m py_compile research/eval_reference_profiles.py research/make_reference_profile_pack.py research/summarize_profile_ratings.py research/report_reference_profile_peaks.py
+          python -W error::ResourceWarning -m unittest discover -v -s research -p 'test_*.py'
