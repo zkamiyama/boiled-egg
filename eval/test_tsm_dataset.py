@@ -15,7 +15,47 @@ import soundfile as sf
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "eval"))
 
-from tsm_dataset import compute_metrics, import_dataset, read_manifest
+from tsm_dataset import _best_shift, _corr, compute_metrics, import_dataset, read_manifest
+
+
+class CorrelationPurityTest(unittest.TestCase):
+    def test_float64_inputs_unchanged(self) -> None:
+        a = np.array([1.0, 4.0, 2.0, 8.0, 5.0])
+        b = np.array([3.0, 1.0, 5.0, 7.0, 2.0])
+        before_a, before_b = a.copy(), b.copy()
+        self.assertAlmostEqual(_corr(a, b), np.corrcoef(a, b)[0, 1])
+        np.testing.assert_array_equal(a, before_a)
+        np.testing.assert_array_equal(b, before_b)
+
+    def test_overlapping_strided_views_unchanged(self) -> None:
+        base = np.array([2., 9., 1., 3., 7., 8., 4., 6., 5., 0., 11.])
+        before = base.copy()
+        a, b = base[::2], base[2::2]
+        expected = np.corrcoef(a[:len(b)], b)[0, 1]
+        self.assertAlmostEqual(_corr(a, b), expected)
+        np.testing.assert_array_equal(base, before)
+
+    def test_read_only_arrays(self) -> None:
+        a = np.array([1., 3., 2., 8., 5.])
+        b = -a.copy()
+        a.flags.writeable = False
+        b.flags.writeable = False
+        self.assertAlmostEqual(_corr(a, b), -1.0)
+        self.assertAlmostEqual(_corr(a, a), 1.0)
+
+    def test_shift_search_is_repeatable_without_mutation(self) -> None:
+        a = np.array([0., 1., 0., 3., 2., 0., 5., 0., 1., 0.])
+        b = np.r_[0., 0., a[:-2]]
+        before_a, before_b = a.copy(), b.copy()
+        self.assertEqual(_best_shift(a, b, 3), 2)
+        self.assertEqual(_best_shift(a, b, 3), 2)
+        np.testing.assert_array_equal(a, before_a)
+        np.testing.assert_array_equal(b, before_b)
+
+    def test_existing_short_and_constant_conventions(self) -> None:
+        self.assertEqual(_corr(np.zeros(2), np.zeros(2)), 0.)
+        self.assertEqual(_corr(np.ones(5), np.ones(5)), 1.)
+        self.assertEqual(_corr(np.ones(5), np.arange(5.)), 0.)
 
 
 class TsmDatasetToolsTest(unittest.TestCase):
