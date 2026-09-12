@@ -111,9 +111,29 @@ def source_job(job: tuple) -> list[dict]:
 
 
 def summarize(rows: list[dict]) -> dict:
+    expected = {
+        'tsm': {'elastique_tsm', 'general', 'transient', 'multires',
+                'wsola', 'hpss_general', 'hpss_transient'},
+        'pitch': {'derived_elastique', 'hpss_general', 'hpss_transient'},
+    }
     grouped = defaultdict(dict)
     for r in rows:
-        grouped[(r['task'], r['stem'], r['percent'])][r['system']] = r
+        if r['task'] not in expected or r['system'] not in expected[r['task']]:
+            raise ValueError('unexpected task/system in experiment rows')
+        if not all(math.isfinite(float(r[f])) for f in ('semitones', 'env', 'onset', 'peak')):
+            raise ValueError('non-finite experiment metric')
+        key = (r['task'], r['stem'], r['percent'])
+        if r['system'] in grouped[key]:
+            raise ValueError(f'duplicate experiment row: {key}/{r["system"]}')
+        grouped[key][r['system']] = r
+    for key, paired in grouped.items():
+        if set(paired) != expected[key[0]]:
+            raise ValueError(f'incomplete paired condition: {key}')
+        values = list(paired.values())
+        if any(v['category'] != values[0]['category'] or
+               not math.isclose(float(v['semitones']), float(values[0]['semitones']),
+                                rel_tol=0, abs_tol=1e-6) for v in values[1:]):
+            raise ValueError(f'inconsistent paired condition: {key}')
     summaries = {}
     for task in ('tsm', 'pitch'):
         baseline = 'elastique_tsm' if task == 'tsm' else 'derived_elastique'
