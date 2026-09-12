@@ -17,10 +17,10 @@ int main(int argc, char** argv) {
                          "[--pitch-semitones ST | --pitch-ratio P] "
                          "[--profile general|transient] "
                          "[--formant off|harmonic|monophonic] [--formant-order N] [--formant-gain-db X] "
-                         "[--mode classic|locked|transient] [--block N] [--fft N] [--hop N] "
+                         "[--mode classic|locked|transient|fuzzy|fuzzy-noise] [--block N] [--fft N] [--hop N] "
                          "[--transient-floor X] [--transient-sigma X]\n"
                          "note: --mode transient is the low-level phase-reset experiment; "
-                         "--profile transient selects the validated 1024/128 phase-locked profile.\n";
+                         "--profile transient selects the validated 1024/256 phase-locked profile.\n";
             return 2;
         }
         const std::string input_path = argv[1];
@@ -67,6 +67,8 @@ int main(int argc, char** argv) {
                 if (requested == "classic") mode_override = BOILEDEGG_RESEARCH_PV_RT_CLASSIC;
                 else if (requested == "locked") mode_override = BOILEDEGG_RESEARCH_PV_RT_PHASE_LOCKED;
                 else if (requested == "transient") mode_override = BOILEDEGG_RESEARCH_PV_RT_TRANSIENT;
+                else if (requested == "fuzzy") mode_override = BOILEDEGG_RESEARCH_PV_RT_FUZZY;
+                else if (requested == "fuzzy-noise") mode_override = BOILEDEGG_RESEARCH_PV_RT_FUZZY_NOISE;
                 else throw std::runtime_error("unknown low-level mode: " + requested);
             } else throw std::runtime_error("unknown argument: " + argument);
         }
