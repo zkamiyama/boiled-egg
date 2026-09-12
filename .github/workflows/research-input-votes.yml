@@ -1,0 +1,52 @@
+name: research-input-votes
+
+on:
+  push:
+    paths:
+      - 'research/audit_tsm_inputs.py'
+      - 'research/score_blind_votes.py'
+      - 'research/test_input_audit_and_votes.py'
+      - '.github/workflows/research-input-votes.yml'
+      - 'requirements-dev.txt'
+  pull_request:
+    paths:
+      - 'research/audit_tsm_inputs.py'
+      - 'research/score_blind_votes.py'
+      - 'research/test_input_audit_and_votes.py'
+      - '.github/workflows/research-input-votes.yml'
+      - 'requirements-dev.txt'
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-tools:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsndfile1
+          python3 -m pip install --user -r requirements-dev.txt
+      - name: Compile and run synthetic regression
+        shell: bash
+        run: |
+          mkdir validation
+          python3 -m py_compile research/audit_tsm_inputs.py research/score_blind_votes.py research/test_input_audit_and_votes.py
+          python3 -W error::ResourceWarning -m unittest -v research/test_input_audit_and_votes.py 2>&1 | tee validation/tests.log
+      - name: Record exact source for local replay
+        shell: bash
+        run: |
+          git archive --format=tar.gz --prefix=boiled-egg/ HEAD > validation/source.tar.gz
+          git rev-parse HEAD > validation/COMMIT.txt
+          git rev-parse HEAD^{tree} > validation/TREE.txt
+          (cd validation && sha256sum source.tar.gz > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: input-votes-validation-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7
