@@ -6,6 +6,13 @@ on:
       - 'research/audit_tsm_inputs.py'
       - 'research/score_blind_votes.py'
       - 'research/test_input_audit_and_votes.py'
+      - 'research/report_reference_peaks.py'
+      - 'research/test_reference_peak_audit.py'
+      - 'research/eval_reference_profiles.py'
+      - 'research/make_reference_profile_pack.py'
+      - 'research/test_reference_profiles.py'
+      - 'research/eval_multires_corpus.py'
+      - 'research/make_blind_multires_pack.py'
       - '.github/workflows/research-input-votes.yml'
       - 'requirements-dev.txt'
   pull_request:
@@ -13,6 +20,13 @@ on:
       - 'research/audit_tsm_inputs.py'
       - 'research/score_blind_votes.py'
       - 'research/test_input_audit_and_votes.py'
+      - 'research/report_reference_peaks.py'
+      - 'research/test_reference_peak_audit.py'
+      - 'research/eval_reference_profiles.py'
+      - 'research/make_reference_profile_pack.py'
+      - 'research/test_reference_profiles.py'
+      - 'research/eval_multires_corpus.py'
+      - 'research/make_blind_multires_pack.py'
       - '.github/workflows/research-input-votes.yml'
       - 'requirements-dev.txt'
 
@@ -35,8 +49,8 @@ jobs:
         shell: bash
         run: |
           mkdir validation
-          python3 -m py_compile research/audit_tsm_inputs.py research/score_blind_votes.py research/test_input_audit_and_votes.py
-          python3 -W error::ResourceWarning -m unittest -v research/test_input_audit_and_votes.py 2>&1 | tee validation/tests.log
+          python3 -m py_compile research/audit_tsm_inputs.py research/score_blind_votes.py research/test_input_audit_and_votes.py research/report_reference_peaks.py research/test_reference_peak_audit.py
+          python3 -W error::ResourceWarning -m unittest -v research/test_input_audit_and_votes.py research/test_reference_peak_audit.py 2>&1 | tee validation/tests.log
       - name: Record exact source for local replay
         shell: bash
         run: |
