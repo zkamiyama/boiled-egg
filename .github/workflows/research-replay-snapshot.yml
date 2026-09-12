@@ -22,8 +22,9 @@ jobs:
           git archive --format=tar.gz --prefix=boiled-egg/ HEAD > replay/source.tar.gz
           git rev-parse HEAD > replay/COMMIT.txt
           git rev-parse HEAD^{tree} > replay/TREE.txt
+          git log -1 --format=fuller > replay/COMMIT_DETAILS.txt
           git ls-tree -r HEAD > replay/TRACKED_FILES.txt
-          (cd replay && sha256sum source.tar.gz > SHA256SUMS)
+          (cd replay && sha256sum source.tar.gz COMMIT.txt TREE.txt COMMIT_DETAILS.txt TRACKED_FILES.txt > SHA256SUMS)
           printf 'Exact tracked research source only; no credentials, build outputs or local datasets.\n' > replay/README.txt
       - uses: actions/upload-artifact@v4
         with:
