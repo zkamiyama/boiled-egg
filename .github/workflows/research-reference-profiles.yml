@@ -1,0 +1,54 @@
+name: research-reference-profiles
+
+on:
+  push:
+    paths:
+      - "research/**"
+      - "requirements-dev.txt"
+      - ".github/workflows/research-reference-profiles.yml"
+  pull_request:
+    paths:
+      - "research/**"
+      - "requirements-dev.txt"
+      - ".github/workflows/research-reference-profiles.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  OPENBLAS_NUM_THREADS: 1
+  OMP_NUM_THREADS: 1
+
+jobs:
+  reference-profiles:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Dependencies
+        run: |
+          python -m pip install -r requirements-dev.txt
+          node --version
+      - name: Build research CLI and C ABI tests
+        run: |
+          cmake -S research/cpp_pv_rt -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=20
+          cmake --build build -j 2
+          ctest --test-dir build --output-on-failure
+      - name: Reference-grid and blind-listening integration
+        run: |
+          export BOILED_EGG_PV_CLI="$PWD/build/boiled_egg_pv_rt_cli"
+          export BOILED_EGG_MULTIRES_CLI="$PWD/build/boiled_egg_multires_rt_cli"
+          python -m py_compile research/eval_reference_profiles.py research/make_reference_profile_pack.py research/summarize_profile_ratings.py
+          python -W error::ResourceWarning -m unittest -v research/test_reference_profiles.py research/test_blind_multires_pack.py research/test_peak_outliers.py
