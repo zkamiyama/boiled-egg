@@ -1,0 +1,82 @@
+name: research-fuzzy
+
+on:
+  push:
+    paths:
+      - 'research/**'
+      - 'eval/tsm_dataset.py'
+      - 'eval/test_tsm_dataset.py'
+      - 'requirements-dev.txt'
+      - '.github/workflows/research-fuzzy.yml'
+  pull_request:
+    paths:
+      - 'research/**'
+      - 'eval/tsm_dataset.py'
+      - 'eval/test_tsm_dataset.py'
+      - 'requirements-dev.txt'
+      - '.github/workflows/research-fuzzy.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  OPENBLAS_NUM_THREADS: 1
+  OMP_NUM_THREADS: 1
+
+jobs:
+  fuzzy-regression:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Dependencies and provenance
+        shell: bash
+        run: |
+          mkdir validation
+          python -m pip install -r requirements-dev.txt
+          python -m pip freeze > validation/requirements-resolved.txt
+          node --version
+          git rev-parse HEAD > validation/COMMIT.txt
+          git rev-parse HEAD^{tree} > validation/TREE.txt
+      - name: C++ integration, C ABI and allocation-free processing
+        shell: bash
+        run: |
+          cmake -S research/cpp_pv_rt -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=20
+          cmake --build build -j 2
+          ctest --test-dir build --output-on-failure 2>&1 | tee validation/ctest.log
+      - name: Grid, recovery, blind export and legacy metric regressions
+        shell: bash
+        run: |
+          export BOILED_EGG_PV_CLI="$PWD/build/boiled_egg_pv_rt_cli"
+          export BOILED_EGG_MULTIRES_CLI="$PWD/build/boiled_egg_multires_rt_cli"
+          python -W error::ResourceWarning -m unittest discover -v -s research -p 'test_*.py' 2>&1 | tee validation/python.log
+          python -W error::ResourceWarning -m unittest -v eval/test_tsm_dataset.py 2>&1 | tee validation/legacy.log
+      - name: 48 and 96 kHz pure-tone safety with explicit window scaling
+        if: matrix.python == '3.13'
+        shell: bash
+        run: |
+          python research/check_fuzzy_quality.py --cli build/boiled_egg_pv_rt_cli \
+            --output validation/tonal --rates 48000 96000 --scale-window 2>&1 | tee validation/tonal.log
+      - name: Preserve validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzzy-validation-${{ matrix.python }}-${{ github.sha }}
+          path: |
+            validation/*.txt
+            validation/*.log
+            validation/tonal/summary.json
+          if-no-files-found: error
+          retention-days: 14
