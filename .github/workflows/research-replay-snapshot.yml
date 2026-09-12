@@ -1,0 +1,33 @@
+name: research-replay-snapshot
+
+on:
+  workflow_dispatch:
+  push:
+    paths: [".github/workflows/research-replay-snapshot.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Export tracked source and provenance
+        shell: bash
+        run: |
+          mkdir replay
+          git archive --format=tar.gz --prefix=boiled-egg/ HEAD > replay/source.tar.gz
+          git rev-parse HEAD > replay/COMMIT.txt
+          git rev-parse HEAD^{tree} > replay/TREE.txt
+          git ls-tree -r HEAD > replay/TRACKED_FILES.txt
+          (cd replay && sha256sum source.tar.gz > SHA256SUMS)
+          printf 'Exact tracked research source only; no credentials, build outputs or local datasets.\n' > replay/README.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: research-replay-${{ github.sha }}
+          path: replay/
+          if-no-files-found: error
+          retention-days: 7
