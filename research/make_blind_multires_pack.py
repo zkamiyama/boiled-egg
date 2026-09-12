@@ -127,7 +127,7 @@ def select_conditions(
         envelope = [
             float(elastique[key]["env_rmse_db"]),
             float(general_row["env_rmse_db"]),
-            float(transient[key]["env"]),
+            float(transient[key]["env_rmse_db"]),
             float(multires[key]["env"]),
         ]
         if not all(math.isfinite(value) for value in onset + envelope):
