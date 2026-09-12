@@ -97,3 +97,9 @@ target_link_libraries(boiled_egg_pv_rt_window_bench PRIVATE boiled_egg_research_
 add_executable(boiled_egg_multires_rt_bench tests/multires_bench.cpp)
 target_compile_features(boiled_egg_multires_rt_bench PRIVATE cxx_std_20)
 target_link_libraries(boiled_egg_multires_rt_bench PRIVATE boiled_egg_research_multires_rt)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(boiled_egg_fuzzy_bench tests/fuzzy_bench.cpp)
+    target_compile_features(boiled_egg_fuzzy_bench PRIVATE cxx_std_20)
+    target_link_libraries(boiled_egg_fuzzy_bench PRIVATE boiled_egg_research_pv_rt)
+endif()

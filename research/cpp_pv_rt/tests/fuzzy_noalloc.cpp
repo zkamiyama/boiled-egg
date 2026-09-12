@@ -31,10 +31,11 @@ int main(){
     constexpr std::uint32_t block=32;
     std::array<float,block> a{},b{};std::array<float,block*8> oa{},ob{};
     const float* in[]={a.data(),b.data()};float* out[]={oa.data(),ob.data()};
+    for(std::uint32_t fft:{1024U,2048U})
     for(auto mode:{BOILEDEGG_RESEARCH_PV_RT_FUZZY,BOILEDEGG_RESEARCH_PV_RT_FUZZY_NOISE})
       for(std::uint32_t formant:{0U,1U,2U}){
         auto c=boiledegg_research_pv_rt_default_config(96000,2,block);
-        c.fft_size=1024;c.analysis_hop=256;c.mode=mode;c.formant_mode=formant;c.initial_pitch_ratio=1.5F;
+        c.fft_size=fft;c.analysis_hop=fft/4U;c.mode=mode;c.formant_mode=formant;c.initial_pitch_ratio=1.5F;
         boiledegg_research_pv_rt_result result{};
         auto* h=boiledegg_research_pv_rt_create(&c,&result);if(!h)return 1;
         enabled.store(true);
