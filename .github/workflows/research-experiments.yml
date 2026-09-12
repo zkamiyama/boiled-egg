@@ -1,0 +1,103 @@
+name: research-experiments
+
+on:
+  push:
+    paths: ["research/**", ".github/workflows/research-experiments.yml", "docs/research/CORPUS_EXPERIMENTS_2026-09-13.md"]
+  pull_request:
+    paths: ["research/**", ".github/workflows/research-experiments.yml", "docs/research/CORPUS_EXPERIMENTS_2026-09-13.md"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  OPENBLAS_NUM_THREADS: 1
+  OMP_NUM_THREADS: 1
+
+jobs:
+  python:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: python3 -m pip install --user -r requirements-dev.txt
+      - name: Offline primitives, accounting and existing listening tools
+        run: |
+          python3 -m py_compile research/eval_multires_corpus.py research/eval_hybrid_corpus.py research/hpss_wsola_reference.py
+          python3 -W error::ResourceWarning -m unittest -v research/test_hpss_wsola_reference.py research/test_corpus_evaluators.py research/test_blind_multires_pack.py research/test_peak_outliers.py
+
+  cpp:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        standard: [20, 23]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply isolated research patch
+        run: git apply --check research/experiments/overlap_guard.patch && git apply research/experiments/overlap_guard.patch
+      - name: Configure, build and test
+        run: |
+          if [ "${{ matrix.compiler }}" = clang ]; then export CC=clang CXX=clang++; else export CC=gcc CXX=g++; fi
+          cmake -S research/cpp_pv_rt -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=${{ matrix.standard }} -DCMAKE_CXX_EXTENSIONS=OFF -DBOILED_EGG_PV_RT_OVERLAP_GUARD=ON
+          cmake --build build -j 2
+          ctest --test-dir build --output-on-failure
+
+  sanitizers:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Isolated patch with ASan and UBSan
+        run: |
+          git apply research/experiments/overlap_guard.patch
+          cmake -S research/cpp_pv_rt -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_CXX_STANDARD=20 -DCMAKE_BUILD_TYPE=Debug -DBOILED_EGG_PV_RT_OVERLAP_GUARD=ON -DCMAKE_C_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer -O1' -DCMAKE_CXX_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer -O1' -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=address,undefined'
+          cmake --build build -j 2
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 ctest --test-dir build --output-on-failure
+
+  quality:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        hop_percent: [50, 75]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies and isolated patch
+        run: |
+          python3 -m pip install --user -r requirements-dev.txt
+          git apply research/experiments/overlap_guard.patch
+          cmake -S research/cpp_pv_rt -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBOILED_EGG_PV_RT_OVERLAP_GUARD=ON -DBOILED_EGG_PV_RT_MAX_SYNTHESIS_HOP_PERCENT=${{ matrix.hop_percent }}
+          cmake --build build -j 2
+          ctest --test-dir build --output-on-failure
+      - name: Synthetic tonal, formant and high-band gates
+        run: |
+          python3 research/test_multires_candidate.py --cli "$PWD/build/boiled_egg_multires_rt_cli" --output tonal
+          python3 research/test_multires_highband.py --cli "$PWD/build/boiled_egg_multires_rt_cli" --output highband
+          python3 research/eval_formant_pitch.py --cli "$PWD/build/boiled_egg_pv_rt_cli" --output formant
+          ./build/boiled_egg_multires_rt_bench > callback.csv
+      - name: Record unresolved non-promotion diagnostics
+        run: |
+          set +e
+          ./build/boiled_egg_overlap_guard_test dynamic > known-dynamic.txt
+          dynamic=$?
+          ./build/boiled_egg_overlap_guard_test extended > known-extended.txt
+          extended=$?
+          set -e
+          printf 'exitcode=%s\n' "$dynamic" >> known-dynamic.txt
+          printf 'exitcode=%s\n' "$extended" >> known-extended.txt
+          cat known-dynamic.txt known-extended.txt
+          echo 'Known dynamic-duration and internal-stretch-16 stereo diagnostics are NOT promotion passes.' >> "$GITHUB_STEP_SUMMARY"
+          test "$dynamic" -eq 0 || test "$dynamic" -eq 4
+          test "$extended" -eq 0 || test "$extended" -eq 5
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: overlap-${{ matrix.hop_percent }}-diagnostics
+          path: |
+            tonal/metrics.csv
+            highband/metrics.csv
+            formant/report.json
+            callback.csv
+            known-*.txt
+          retention-days: 14
