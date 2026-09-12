@@ -35,12 +35,12 @@
 +        target_link_libraries(boiled_egg_overlap_guard_test PRIVATE boiled_egg_research_multires_rt)
 +        add_test(NAME boiled_egg_overlap_guard_test COMMAND boiled_egg_overlap_guard_test)
 +    endif()
-     add_executable(boiled_egg_pv_rt_test tests/test.cpp)
-     target_compile_features(boiled_egg_pv_rt_test PRIVATE cxx_std_20)
-     target_link_libraries(boiled_egg_pv_rt_test PRIVATE boiled_egg_research_pv_rt)
+     foreach(test fuzzy_test fuzzy_noalloc)
+         add_executable(boiled_egg_${test} tests/${test}.cpp)
+         target_compile_features(boiled_egg_${test} PRIVATE cxx_std_20)
 --- a/research/cpp_pv_rt/src/pv_rt.cpp
 +++ b/research/cpp_pv_rt/src/pv_rt.cpp
-@@ -160,6 +160,7 @@
+@@ -164,6 +164,7 @@
          std::fill(previous_linked_magnitude_.begin(), previous_linked_magnitude_.end(), 0.0F);
          input_write_ = n_fft_ / 2U;
          analysis_start_ = 0;
@@ -48,22 +48,29 @@
          synthesis_position_ = 0.0;
          latest_safe_position_ = 0;
          cleanup_position_ = 0;
-@@ -481,14 +482,23 @@
+@@ -485,11 +486,20 @@
          if (mode_ != BOILEDEGG_RESEARCH_PV_RT_CLASSIC) find_peaks();
          const std::uint64_t previous_synth = previous_synth_start_;
          const float synthesis_hop = initialized_ ? static_cast<float>(synth_start - previous_synth) : 0.0F;
 +#ifdef BOILED_EGG_PV_RT_OVERLAP_GUARD
-+        // Phase estimation must use the actual preceding input stride when
-+        // the overlap guard changes the hop. The first frame does not use it.
++        // Both legacy and fuzzy phase estimators need the actual preceding
++        // input stride when this isolated experiment changes the hop.
 +        const float analysis_delta = initialized_
 +            ? static_cast<float>(analysis_start_ - previous_analysis_start_)
 +            : static_cast<float>(analysis_hop_);
 +#else
 +        const float analysis_delta = static_cast<float>(analysis_hop_);
 +#endif
-         for (std::uint32_t ch = 0; ch < channels_; ++ch) {
-             for (std::uint32_t k = 0; k < bins_; ++k) {
-                 const std::size_t idx = static_cast<std::size_t>(ch) * bins_ + k;
+         const bool fuzzy_mode = mode_ >= BOILEDEGG_RESEARCH_PV_RT_FUZZY;
+         if (fuzzy_mode) {
+             fuzzy_.process(linked_magnitude_.data(), previous_linked_magnitude_.data(),
+                 magnitude_.data(), phase_.data(), previous_phase_.data(), owners_.data(),
+-                omega_.data(), channels_, analysis_hop_, synthesis_hop,
++                omega_.data(), channels_, static_cast<std::uint32_t>(analysis_delta), synthesis_hop,
+                 static_cast<float>(internal_stretch()), initialized_,
+                 mode_ == BOILEDEGG_RESEARCH_PV_RT_FUZZY, output_phase_.data());
+         }
+@@ -500,8 +510,8 @@
                  if (!initialized_ || transient) {
                      output_phase_[idx] = phase_[idx];
                  } else {
@@ -74,7 +81,7 @@
                      output_phase_[idx] = previous_output_phase_[idx] + instantaneous * synthesis_hop;
                  }
              }
-@@ -534,8 +544,21 @@
+@@ -548,8 +558,21 @@
              initialized_ = true;
          }
          previous_synth_start_ = synth_start;
@@ -98,9 +105,9 @@
      }
  
      [[nodiscard]] std::uint64_t pv_count() const noexcept { return pv_write_ - pv_start_; }
-@@ -642,7 +665,7 @@
-     std::vector<float> log_envelope_, formant_gain_;
+@@ -657,7 +680,7 @@
      std::vector<std::uint32_t> peaks_, owners_;
+     fuzzy_phase fuzzy_;
      std::uint32_t peak_count_{};
 -    std::uint64_t input_write_{}, analysis_start_{}, previous_synth_start_{}, latest_safe_position_{}, cleanup_position_{}, startup_crop_{}, real_input_frames_{}, pv_emitted_frames_{}, emitted_frames_{};
 +    std::uint64_t input_write_{}, analysis_start_{}, previous_analysis_start_{}, previous_synth_start_{}, latest_safe_position_{}, cleanup_position_{}, startup_crop_{}, real_input_frames_{}, pv_emitted_frames_{}, emitted_frames_{};
