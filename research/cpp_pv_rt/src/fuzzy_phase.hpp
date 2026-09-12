@@ -26,6 +26,7 @@ public:
         : bins_(bins), radius_(std::clamp(
               static_cast<std::uint32_t>(std::lround(250.0 * fft / rate)), 2U, 31U)),
           history_(static_cast<std::size_t>(bins) * history_size),
+          sorted_history_(static_cast<std::size_t>(bins) * history_size),
           rotation_(bins), predicted_(bins), membership_(bins), jitter_(bins),
           refractory_(bins) {
         // Precompute the noisiness term of (13), outside the callback.
@@ -38,6 +39,7 @@ public:
 
     void reset() noexcept {
         std::fill(history_.begin(), history_.end(), 0.0F);
+        std::fill(sorted_history_.begin(), sorted_history_.end(), 0.0F);
         std::fill(rotation_.begin(), rotation_.end(), 0.0F);
         std::fill(refractory_.begin(), refractory_.end(), 0U);
         position_ = 0;
@@ -65,24 +67,36 @@ public:
             // Replicate the first frame instead of inventing preceding silence.
             for (std::size_t i = 0; i < history_size; ++i)
                 std::copy_n(linked, bins_, history_.data() + i * bins_);
+            for (std::uint32_t k = 0; k < bins_; ++k)
+                std::fill_n(sorted_history_.data() + k * history_size, history_size, linked[k]);
             populated_ = true;
         }
-        std::copy_n(linked, bins_, history_.data() + position_ * bins_);
-        position_ = (position_ + 1U) % history_size;
-        for (std::uint32_t k = 0; k < bins_; ++k) {
-            std::array<float, history_size> horizontal{};
-            for (std::size_t i = 0; i < history_size; ++i)
-                horizontal[i] = history_[i * bins_ + k];
-            std::array<float, 63> vertical{};
-            const auto length = 2U * radius_ + 1U;
-            for (std::uint32_t j = 0; j < length; ++j) {
-                const auto bin = std::clamp(static_cast<int>(k) + static_cast<int>(j) -
-                    static_cast<int>(radius_), 0, static_cast<int>(bins_) - 1);
-                vertical[j] = linked[static_cast<std::uint32_t>(bin)];
-            }
-            membership_[k] = classify(median(horizontal.data(), history_size),
-                                      median(vertical.data(), length));
+        // Exact rolling order statistics. The initial frequency window is
+        // sorted once; each successive bin evicts/inserts one value. Time
+        // windows similarly replace the outgoing ring entry. This preserves
+        // the original medians, including replicated edges and duplicate bins,
+        // without re-sorting two complete windows at every time-frequency bin.
+        std::array<float, 63> vertical{};
+        const auto length = 2U * radius_ + 1U;
+        for (std::uint32_t j = 0; j < length; ++j) {
+            const auto bin = std::clamp(static_cast<int>(j) - static_cast<int>(radius_),
+                                       0, static_cast<int>(bins_) - 1);
+            vertical[j] = linked[static_cast<std::uint32_t>(bin)];
         }
+        (void)median(vertical.data(), length);
+        float* oldest = history_.data() + position_ * bins_;
+        for (std::uint32_t k = 0; k < bins_; ++k) {
+            float* horizontal = sorted_history_.data() + k * history_size;
+            replace_sorted(horizontal, history_size, oldest[k], linked[k]);
+            oldest[k] = linked[k];
+            if (k) {
+                const auto outgoing = k > radius_ ? k - radius_ - 1U : 0U;
+                const auto incoming = std::min(k + radius_, bins_ - 1U);
+                replace_sorted(vertical.data(), length, linked[outgoing], linked[incoming]);
+            }
+            membership_[k] = classify(horizontal[history_size / 2U], vertical[length / 2U]);
+        }
+        position_ = (position_ + 1U) % history_size;
     }
 
     // Arrays have channels*bins elements unless explicitly linked/owners/omega.
@@ -147,6 +161,23 @@ public:
     [[nodiscard]] membership bin(std::uint32_t k) const noexcept { return membership_[k]; }
 
 private:
+    static void replace_sorted(float* data, std::size_t size, float outgoing, float incoming) noexcept {
+        // Finite nonnegative magnitudes; exactly one copy of outgoing exists.
+        // All loops are bounded by size (9 in time, at most 63 in frequency).
+        if (outgoing == incoming) return;
+        std::size_t i = 0;
+        while (i + 1U < size && data[i] < outgoing) ++i;
+        if (incoming > outgoing) {
+            while (i + 1U < size && data[i + 1U] < incoming) {
+                data[i] = data[i + 1U]; ++i;
+            }
+        } else {
+            while (i && data[i - 1U] > incoming) {
+                data[i] = data[i - 1U]; --i;
+            }
+        }
+        data[i] = incoming;
+    }
     static float median(float* data, std::size_t size) noexcept {
         // Insertion sort has bounded work and does not allocate; windows <=63.
         for (std::size_t i = 1; i < size; ++i) {
@@ -165,7 +196,7 @@ private:
         return static_cast<float>(random_ >> 8U) * (1.0F / 16777216.0F) - 0.5F;
     }
     std::uint32_t bins_, radius_;
-    std::vector<float> history_, rotation_, predicted_;
+    std::vector<float> history_, sorted_history_, rotation_, predicted_;
     std::vector<membership> membership_;
     std::vector<float> jitter_;
     std::vector<std::uint32_t> refractory_;
