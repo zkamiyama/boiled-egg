@@ -5,11 +5,15 @@ on:
     paths:
       - "research/make_blind_multires_pack.py"
       - "research/test_blind_multires_pack.py"
+      - "research/report_peak_outliers.py"
+      - "research/test_peak_outliers.py"
       - ".github/workflows/research-listening-tools.yml"
   pull_request:
     paths:
       - "research/make_blind_multires_pack.py"
       - "research/test_blind_multires_pack.py"
+      - "research/report_peak_outliers.py"
+      - "research/test_peak_outliers.py"
       - ".github/workflows/research-listening-tools.yml"
 
 jobs:
@@ -23,6 +27,8 @@ jobs:
           sudo apt-get install -y libsndfile1
           python3 -m pip install --user -r requirements-dev.txt
       - name: Compile tools
-        run: python3 -m py_compile research/make_blind_multires_pack.py research/test_blind_multires_pack.py
-      - name: Synthetic four-way pack smoke test
-        run: python3 -m unittest -v research/test_blind_multires_pack.py
+        run: |
+          python3 -m py_compile research/make_blind_multires_pack.py research/test_blind_multires_pack.py
+          python3 -m py_compile research/report_peak_outliers.py research/test_peak_outliers.py
+      - name: Synthetic blind pack and raw peak audit regression
+        run: python3 -W error::ResourceWarning -m unittest -v research/test_blind_multires_pack.py research/test_peak_outliers.py
