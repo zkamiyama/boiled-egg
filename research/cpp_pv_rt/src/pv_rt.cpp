@@ -1,6 +1,7 @@
 #include "boiled_egg_pv_rt.h"
 #include "fft.hpp"
 #include "fuzzy_phase.hpp"
+#include "research_features.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -99,12 +100,15 @@ const resampler_kernel_bank& kernels() {
 
 class engine {
 public:
-    explicit engine(const boiledegg_research_pv_rt_config& config)
+    explicit engine(const boiledegg_research_pv_rt_config& config, const boiledegg_research_features& features)
         : sample_rate_(config.sample_rate), channels_(config.channels), max_block_(config.max_block_frames),
           n_fft_(config.fft_size), bins_(n_fft_ / 2U + 1U), analysis_hop_(config.analysis_hop),
           mode_(static_cast<boiledegg_research_pv_rt_mode>(config.mode)),
           formant_mode_(static_cast<boiledegg_research_pv_rt_formant_mode>(config.formant_mode)),
           time_ratio_(config.initial_time_ratio), pitch_ratio_(config.initial_pitch_ratio),
+          timing_policy_(features.timing_policy), formant_ratio_(features.initial_formant_ratio),
+          smoothed_formant_ratio_(features.initial_formant_ratio),
+          formant_smoothing_(1.0F - std::exp(-static_cast<float>(analysis_hop_) / (0.010F * static_cast<float>(sample_rate_)))),
           transient_floor_(config.transient_floor), transient_sigma_(config.transient_sigma),
           formant_cepstral_order_(config.formant_cepstral_order),
           formant_gain_limit_db_(config.formant_gain_limit_db),
@@ -154,6 +158,7 @@ public:
 
     void reset() noexcept {
         fuzzy_.reset();
+        smoothed_formant_ratio_ = formant_ratio_;
         std::fill(input_.begin(), input_.end(), 0.0F);
         std::fill(ola_.begin(), ola_.end(), 0.0F);
         std::fill(weight_.begin(), weight_.end(), 0.0F);
@@ -167,7 +172,7 @@ public:
         synthesis_position_ = 0.0;
         latest_safe_position_ = 0;
         cleanup_position_ = 0;
-        startup_crop_ = round_u64(static_cast<double>(n_fft_ / 2U) * internal_stretch());
+        startup_crop_ = startup_crop();
         real_input_frames_ = 0;
         expected_pv_frames_ = 0.0;
         expected_output_frames_ = 0.0;
@@ -205,6 +210,17 @@ public:
         process_resampler(false);
         return BOILEDEGG_RESEARCH_PV_RT_OK;
     }
+
+    boiledegg_research_pv_rt_result set_formant_ratio(float value) noexcept {
+        if (flushed_) return BOILEDEGG_RESEARCH_PV_RT_ALREADY_FLUSHED;
+        if (!features::ratio_valid(value) ||
+            (formant_mode_ == BOILEDEGG_RESEARCH_PV_RT_FORMANT_OFF && value != 1.0F))
+            return BOILEDEGG_RESEARCH_PV_RT_INVALID_ARGUMENT;
+        formant_ratio_ = value;
+        if (!initialized_) smoothed_formant_ratio_ = value;
+        return BOILEDEGG_RESEARCH_PV_RT_OK;
+    }
+    [[nodiscard]] float formant_ratio() const noexcept { return formant_ratio_; }
 
     boiledegg_research_pv_rt_result push(const float* const* input, std::uint32_t frames) noexcept {
         if (flushed_) return BOILEDEGG_RESEARCH_PV_RT_ALREADY_FLUSHED;
@@ -278,7 +294,10 @@ public:
     }
     [[nodiscard]] float time_ratio() const noexcept { return time_ratio_; }
     [[nodiscard]] float pitch_ratio() const noexcept { return pitch_ratio_; }
-    [[nodiscard]] std::uint32_t latency() const noexcept { return n_fft_ + max_block_ + k_resampler_half + 2U; }
+    [[nodiscard]] std::uint32_t latency() const noexcept { // Centered startup can require more input at compression. Fixed bound for
+        // all time*pitch >= 1/16 avoids a ratio-dependent underreported hint.
+        return (timing_policy_ == BOILEDEGG_RESEARCH_TIMING_CENTERED ? 9U*n_fft_ + analysis_hop_ + 16U*k_resampler_half : n_fft_)
+            + max_block_ + k_resampler_half + 2U; }
     [[nodiscard]] std::uint64_t input_frames() const noexcept { return real_input_frames_; }
     [[nodiscard]] std::uint64_t output_frames() const noexcept { return emitted_frames_; }
 
@@ -291,9 +310,15 @@ private:
     [[nodiscard]] double internal_stretch() const noexcept {
         return static_cast<double>(time_ratio_) * static_cast<double>(pitch_ratio_);
     }
+    [[nodiscard]] std::uint64_t startup_crop() const noexcept {
+        // Analysis is prepadded N/2, but synthesis frame centers remain N/2
+        // from each frame start, not N/2 * stretch. Crop in synthesis units.
+        return timing_policy_ == BOILEDEGG_RESEARCH_TIMING_CENTERED ? n_fft_/2U
+            : round_u64(static_cast<double>(n_fft_/2U) * internal_stretch());
+    }
     void update_startup_crop() noexcept {
         if (real_input_frames_ == 0 && !initialized_)
-            startup_crop_ = round_u64(static_cast<double>(n_fft_ / 2U) * internal_stretch());
+            startup_crop_ = startup_crop();
     }
     [[nodiscard]] bool full_analysis_frame() const noexcept { return input_write_ >= analysis_start_ + n_fft_; }
     [[nodiscard]] bool ensure_input_space() noexcept {
@@ -329,8 +354,14 @@ private:
 
     void estimate_formant_gain() noexcept {
         std::fill(formant_gain_.begin(), formant_gain_.end(), 1.0F);
+        if (smoothed_formant_ratio_ != formant_ratio_) {
+            const float error = std::log(formant_ratio_ / smoothed_formant_ratio_);
+            smoothed_formant_ratio_ = std::abs(error) < 1.0e-6F ? formant_ratio_
+                : smoothed_formant_ratio_ * std::exp(formant_smoothing_ * error);
+        }
+        const float envelope_warp = pitch_ratio_ / smoothed_formant_ratio_;
         if (formant_mode_ == BOILEDEGG_RESEARCH_PV_RT_FORMANT_OFF ||
-            std::abs(pitch_ratio_ - 1.0F) < 1.0e-6F || formant_gain_limit_db_ <= 0.0F) {
+            std::abs(envelope_warp - 1.0F) < 1.0e-6F || formant_gain_limit_db_ <= 0.0F) {
             formant_energy_compensation_ = 1.0F;
             return;
         }
@@ -385,7 +416,7 @@ private:
         constexpr float neper_per_db = 2.302585092994046F / 20.0F;
         const float bin_hz = static_cast<float>(sample_rate_) / static_cast<float>(n_fft_);
         for (std::uint32_t k = 0; k < bins_; ++k) {
-            const float warped = static_cast<float>(k) * pitch_ratio_;
+            const float warped = static_cast<float>(k) * envelope_warp;
             const std::uint32_t k0 = static_cast<std::uint32_t>(std::min<float>(std::floor(warped), static_cast<float>(bins_ - 1U)));
             const std::uint32_t k1 = std::min<std::uint32_t>(k0 + 1U, bins_ - 1U);
             const float fraction = std::clamp(warped - static_cast<float>(k0), 0.0F, 1.0F);
@@ -646,7 +677,10 @@ private:
     std::uint32_t sample_rate_{}, channels_{}, max_block_{}, n_fft_{}, bins_{}, analysis_hop_{};
     boiledegg_research_pv_rt_mode mode_{};
     boiledegg_research_pv_rt_formant_mode formant_mode_{};
-    float time_ratio_{}, pitch_ratio_{}, transient_floor_{}, transient_sigma_{};
+    float time_ratio_{}, pitch_ratio_{};
+    std::uint32_t timing_policy_{};
+    float formant_ratio_{1.0F}, smoothed_formant_ratio_{1.0F}, formant_smoothing_{};
+    float transient_floor_{}, transient_sigma_{};
     std::uint32_t formant_cepstral_order_{};
     float formant_gain_limit_db_{}, monophonic_min_f0_hz_{}, monophonic_max_f0_hz_{};
     fft_plan fft_;
@@ -692,14 +726,28 @@ boiledegg_research_pv_rt_config boiledegg_research_pv_rt_default_config(uint32_t
     return c;
 }
 boiledegg_research_pv_rt_handle* boiledegg_research_pv_rt_create(const boiledegg_research_pv_rt_config* config, boiledegg_research_pv_rt_result* result) {
-    if (result) *result = BOILEDEGG_RESEARCH_PV_RT_INVALID_ARGUMENT;
-    if (!config || !boiled_egg::research::detail::engine::valid(*config)) {
+    const auto features = boiledegg_research_default_features();
+    return boiledegg_research_pv_rt_create_ex(config, &features, result);
+}
+boiledegg_research_features boiledegg_research_default_features(void) {
+    return {sizeof(boiledegg_research_features), BOILEDEGG_RESEARCH_FEATURES_VERSION,
+            BOILEDEGG_RESEARCH_TIMING_LEGACY, BOILEDEGG_RESEARCH_RATE_FIXED, 1.0F};
+}
+boiledegg_research_pv_rt_handle* boiledegg_research_pv_rt_create_ex(
+    const boiledegg_research_pv_rt_config* config, const boiledegg_research_features* features,
+    boiledegg_research_pv_rt_result* result) {
+    if (result) *result = BOILEDEGG_RESEARCH_PV_RT_INVALID_CONFIG;
+    if (!config || config->struct_size < sizeof(*config) || !boiled_egg::research::features::valid(features, config->formant_mode)) return nullptr;
+    auto scaled = *config;
+    if (!boiled_egg::research::detail::engine::valid(scaled) ||
+        !boiled_egg::research::features::scale_pv(scaled, *features) ||
+        !boiled_egg::research::detail::engine::valid(scaled)) {
         if (result) *result = BOILEDEGG_RESEARCH_PV_RT_INVALID_CONFIG;
         return nullptr;
     }
     try {
         auto* h = new boiledegg_research_pv_rt_handle;
-        try { h->engine = new boiled_egg::research::detail::engine(*config); }
+        try { h->engine = new boiled_egg::research::detail::engine(scaled, *features); }
         catch (...) { delete h; throw; }
         if (result) *result = BOILEDEGG_RESEARCH_PV_RT_OK;
         return h;
@@ -711,6 +759,8 @@ boiledegg_research_pv_rt_handle* boiledegg_research_pv_rt_create(const boiledegg
         return nullptr;
     }
 }
+boiledegg_research_pv_rt_result boiledegg_research_pv_rt_set_formant_ratio(boiledegg_research_pv_rt_handle* h, float ratio) { return (!h || !h->engine) ? BOILEDEGG_RESEARCH_PV_RT_INVALID_ARGUMENT : h->engine->set_formant_ratio(ratio); }
+float boiledegg_research_pv_rt_get_formant_ratio(const boiledegg_research_pv_rt_handle* h) { return (!h || !h->engine) ? 0.0F : h->engine->formant_ratio(); }
 void boiledegg_research_pv_rt_destroy(boiledegg_research_pv_rt_handle* h) { if (h) { delete h->engine; delete h; } }
 boiledegg_research_pv_rt_result boiledegg_research_pv_rt_reset(boiledegg_research_pv_rt_handle* h) { if (!h || !h->engine) return BOILEDEGG_RESEARCH_PV_RT_INVALID_ARGUMENT; h->engine->reset(); return BOILEDEGG_RESEARCH_PV_RT_OK; }
 boiledegg_research_pv_rt_result boiledegg_research_pv_rt_set_time_ratio(boiledegg_research_pv_rt_handle* h, float ratio) { return (!h || !h->engine) ? BOILEDEGG_RESEARCH_PV_RT_INVALID_ARGUMENT : h->engine->set_time_ratio(ratio); }

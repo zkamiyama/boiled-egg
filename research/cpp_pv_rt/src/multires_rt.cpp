@@ -1,4 +1,5 @@
 #include "boiled_egg_multires_rt.h"
+#include "research_features.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -121,7 +122,7 @@ private:
 
 class engine {
 public:
-    explicit engine(const boiledegg_research_multires_rt_config& config)
+    explicit engine(const boiledegg_research_multires_rt_config& config, const boiledegg_research_features& features)
         : sample_rate_(config.sample_rate), channels_(config.channels), max_block_(config.max_block_frames),
           crossover_hz_(config.crossover_hz), fir_taps_(config.fir_taps), fir_half_(fir_taps_ / 2U),
           time_ratio_(config.initial_time_ratio), pitch_ratio_(config.initial_pitch_ratio),
@@ -142,7 +143,7 @@ public:
             high_ptrs_[channel] = high_scratch_.data() + static_cast<std::size_t>(channel) * scratch_frames_;
         }
         build_filter();
-        create_children(config);
+        create_children(config, features);
         reset_local();
     }
 
@@ -207,6 +208,14 @@ public:
         return pump(false);
     }
 
+    boiledegg_research_pv_rt_result set_formant_ratio(float value) noexcept {
+        auto result = boiledegg_research_pv_rt_set_formant_ratio(low_, value);
+        if (result != BOILEDEGG_RESEARCH_PV_RT_OK) return result;
+        return boiledegg_research_pv_rt_set_formant_ratio(high_, value);
+    }
+    [[nodiscard]] float formant_ratio() const noexcept {
+        return boiledegg_research_pv_rt_get_formant_ratio(low_);
+    }
     boiledegg_research_pv_rt_result push(const float* const* input, std::uint32_t frames) noexcept {
         if (flushed_) return BOILEDEGG_RESEARCH_PV_RT_ALREADY_FLUSHED;
         auto result = pump(false);
@@ -279,7 +288,7 @@ public:
     }
 
 private:
-    void create_children(const boiledegg_research_multires_rt_config& config) {
+    void create_children(const boiledegg_research_multires_rt_config& config, const boiledegg_research_features& features) {
         auto base = boiledegg_research_pv_rt_default_config(config.sample_rate, config.channels, config.max_block_frames);
         base.initial_time_ratio = config.initial_time_ratio;
         base.initial_pitch_ratio = config.initial_pitch_ratio;
@@ -294,13 +303,13 @@ private:
         low_config.fft_size = 1024U;
         low_config.analysis_hop = 256U;
         boiledegg_research_pv_rt_result result{};
-        low_ = boiledegg_research_pv_rt_create(&low_config, &result);
+        low_ = boiledegg_research_pv_rt_create_ex(&low_config, &features, &result);
         if (low_ == nullptr) throw result;
 
         auto high_config = base;
         high_config.fft_size = 512U;
         high_config.analysis_hop = 192U;
-        high_ = boiledegg_research_pv_rt_create(&high_config, &result);
+        high_ = boiledegg_research_pv_rt_create_ex(&high_config, &features, &result);
         if (high_ == nullptr) {
             boiledegg_research_pv_rt_destroy(low_);
             low_ = nullptr;
@@ -447,15 +456,26 @@ boiledegg_research_multires_rt_config boiledegg_research_multires_rt_default_con
 boiledegg_research_multires_rt_handle* boiledegg_research_multires_rt_create(
     const boiledegg_research_multires_rt_config* config,
     boiledegg_research_pv_rt_result* result) {
-    if (result != nullptr) *result = BOILEDEGG_RESEARCH_PV_RT_INVALID_ARGUMENT;
-    if (config == nullptr || !boiled_egg::research::multires_detail::engine::valid(*config)) {
+    const auto features = boiledegg_research_default_features();
+    return boiledegg_research_multires_rt_create_ex(config, &features, result);
+}
+boiledegg_research_multires_rt_handle* boiledegg_research_multires_rt_create_ex(
+    const boiledegg_research_multires_rt_config* config,
+    const boiledegg_research_features* features,
+    boiledegg_research_pv_rt_result* result) {
+    if (result != nullptr) *result = BOILEDEGG_RESEARCH_PV_RT_INVALID_CONFIG;
+    if (config == nullptr || config->struct_size < sizeof(*config) || !boiled_egg::research::features::valid(features, config->formant_mode) ||
+        !boiled_egg::research::multires_detail::engine::valid(*config)) {
         if (result != nullptr) *result = BOILEDEGG_RESEARCH_PV_RT_INVALID_CONFIG;
         return nullptr;
     }
+    auto scaled = *config;
+    const auto scale = boiled_egg::research::features::scale(config->sample_rate, *features);
+    scaled.fir_taps = (config->fir_taps - 1U) * scale + 1U;
     try {
         auto* handle = new boiledegg_research_multires_rt_handle;
         try {
-            handle->engine = new boiled_egg::research::multires_detail::engine(*config);
+            handle->engine = new boiled_egg::research::multires_detail::engine(scaled, *features);
         } catch (...) {
             delete handle;
             throw;
@@ -471,6 +491,12 @@ boiledegg_research_multires_rt_handle* boiledegg_research_multires_rt_create(
     }
 }
 
+boiledegg_research_pv_rt_result boiledegg_research_multires_rt_set_formant_ratio(boiledegg_research_multires_rt_handle* h, float ratio) {
+    return (!h || !h->engine) ? BOILEDEGG_RESEARCH_PV_RT_INVALID_ARGUMENT : h->engine->set_formant_ratio(ratio);
+}
+float boiledegg_research_multires_rt_get_formant_ratio(const boiledegg_research_multires_rt_handle* h) {
+    return (!h || !h->engine) ? 0.0F : h->engine->formant_ratio();
+}
 void boiledegg_research_multires_rt_destroy(boiledegg_research_multires_rt_handle* handle) {
     if (handle != nullptr) {
         delete handle->engine;
