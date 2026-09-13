@@ -2,6 +2,7 @@
 #define BOILED_EGG_RESEARCH_PV_RT_HPP
 
 #include "boiled_egg_pv_rt.h"
+#include "boiled_egg_research_features.h"
 #include <stdexcept>
 #include <utility>
 
@@ -28,6 +29,14 @@ inline boiledegg_research_pv_rt_config pv_rt_profile_config(
 
 class pv_rt_engine {
 public:
+    pv_rt_engine(const boiledegg_research_pv_rt_config& config,
+                const boiledegg_research_features& features) {
+        boiledegg_research_pv_rt_result result{};
+        handle_ = boiledegg_research_pv_rt_create_ex(&config, &features, &result);
+        if (!handle_) throw std::runtime_error(boiledegg_research_pv_rt_result_string(result));
+    }
+    void set_formant_ratio(float ratio) { check(boiledegg_research_pv_rt_set_formant_ratio(handle_, ratio)); }
+    [[nodiscard]] float formant_ratio() const noexcept { return boiledegg_research_pv_rt_get_formant_ratio(handle_); }
     explicit pv_rt_engine(const boiledegg_research_pv_rt_config& config) {
         boiledegg_research_pv_rt_result result{};
         handle_ = boiledegg_research_pv_rt_create(&config, &result);

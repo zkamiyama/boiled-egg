@@ -1,5 +1,6 @@
 #include "boiled_egg_multires_rt.h"
 #include "wav.hpp"
+#include "feature_cli.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -16,6 +17,8 @@ int main(int argc, char** argv) {
                          "[--pitch-semitones ST | --pitch-ratio P] "
                          "[--formant off|harmonic|monophonic] [--block N] "
                          "[--crossover HZ] [--taps N]\n";
+            std::cerr << "features: [--timing legacy|centered] [--rate-policy fixed|scaled] "
+                         "[--formant-ratio R | --formant-semitones ST]\n";
             return 2;
         }
         const std::string input_path = argv[1];
@@ -26,7 +29,9 @@ int main(int argc, char** argv) {
         std::uint32_t block = 256U;
         float crossover = 6500.0F;
         std::uint32_t taps = 129U;
+        auto features = boiledegg_research_default_features();
         for (int i = 3; i < argc; ++i) {
+            if (parse_feature_option(i, argc, argv, features)) continue;
             const std::string argument = argv[i];
             if (argument == "--time" && i + 1 < argc) time_ratio = std::stof(argv[++i]);
             else if (argument == "--pitch-ratio" && i + 1 < argc) pitch_ratio = std::stof(argv[++i]);
@@ -55,7 +60,7 @@ int main(int argc, char** argv) {
         config.crossover_hz = crossover;
         config.fir_taps = taps;
         boiledegg_research_pv_rt_result result{};
-        auto* handle = boiledegg_research_multires_rt_create(&config, &result);
+        auto* handle = boiledegg_research_multires_rt_create_ex(&config, &features, &result);
         if (handle == nullptr) throw std::runtime_error(boiledegg_research_pv_rt_result_string(result));
 
         std::vector<std::vector<float>> input(audio.channels, std::vector<float>(block));

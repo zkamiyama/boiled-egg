@@ -3,6 +3,8 @@
 
 #include "boiled_egg_multires_rt.h"
 
+#include "boiled_egg_research_features.h"
+#include <cstdint>
 #include <stdexcept>
 #include <utility>
 
@@ -10,6 +12,14 @@ namespace boiled_egg::research {
 
 class multires_rt_engine {
 public:
+    multires_rt_engine(const boiledegg_research_multires_rt_config& config,
+                const boiledegg_research_features& features) {
+        boiledegg_research_pv_rt_result result{};
+        handle_ = boiledegg_research_multires_rt_create_ex(&config, &features, &result);
+        if (!handle_) throw std::runtime_error(boiledegg_research_pv_rt_result_string(result));
+    }
+    void set_formant_ratio(float ratio) { check(boiledegg_research_multires_rt_set_formant_ratio(handle_, ratio)); }
+    [[nodiscard]] float formant_ratio() const noexcept { return boiledegg_research_multires_rt_get_formant_ratio(handle_); }
     explicit multires_rt_engine(const boiledegg_research_multires_rt_config& config) {
         boiledegg_research_pv_rt_result result{};
         handle_ = boiledegg_research_multires_rt_create(&config, &result);

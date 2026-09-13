@@ -1,5 +1,6 @@
 #include "boiled_egg_pv_rt.h"
 #include "wav.hpp"
+#include "feature_cli.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -21,6 +22,8 @@ int main(int argc, char** argv) {
                          "[--transient-floor X] [--transient-sigma X]\n"
                          "note: --mode transient is the low-level phase-reset experiment; "
                          "--profile transient selects the validated 1024/256 phase-locked profile.\n";
+            std::cerr << "features: [--timing legacy|centered] [--rate-policy fixed|scaled] "
+                         "[--formant-ratio R | --formant-semitones ST]\n";
             return 2;
         }
         const std::string input_path = argv[1];
@@ -37,7 +40,9 @@ int main(int argc, char** argv) {
         std::uint32_t hop_override = 0U;
         float transient_floor = 0.12F;
         float transient_sigma = 2.5F;
+        auto features = boiledegg_research_default_features();
         for (int i = 3; i < argc; ++i) {
+            if (parse_feature_option(i, argc, argv, features)) continue;
             const std::string argument = argv[i];
             if (argument == "--time" && i + 1 < argc) ratio = std::stof(argv[++i]);
             else if (argument == "--pitch-ratio" && i + 1 < argc) pitch_ratio = std::stof(argv[++i]);
@@ -90,7 +95,7 @@ int main(int argc, char** argv) {
         if (hop_override != 0U) config.analysis_hop = hop_override;
         config.transient_floor = transient_floor;
         config.transient_sigma = transient_sigma;
-        boiledegg_research_pv_rt_handle* handle = boiledegg_research_pv_rt_create(&config, &result);
+        boiledegg_research_pv_rt_handle* handle = boiledegg_research_pv_rt_create_ex(&config, &features, &result);
         if (!handle) throw std::runtime_error(boiledegg_research_pv_rt_result_string(result));
 
         std::vector<std::vector<float>> input(audio.channels, std::vector<float>(block));
