@@ -1,0 +1,24 @@
+--- a/research/cpp_pv_rt/src/fuzzy_phase.hpp
++++ b/research/cpp_pv_rt/src/fuzzy_phase.hpp
+@@ -3,4 +3,5 @@
+ 
+ #include "work_sequence.hpp"
++#include "phase_owner_refinement.hpp"
+ #include <algorithm>
+ #include <array>
+@@ -150,5 +151,5 @@
+             if (coherence_holdoff_ == 0U &&
+                 std::abs(wrap((frequency_[k]-frequency_[owners[k]])*hop))/hop > std::numbers::pi_v<float>/static_cast<float>(2U*(bins_-1U)))
+-                rotation=predicted_[k];
++                rotation=predicted_[phase_owner_refinement::select(k,bins_,hop,frequency_.data(),owners)];
+ #endif
+             if (refractory_[k]) --refractory_[k];
+--- a/research/cpp_pv_rt/src/fuzzy_execution.inc
++++ b/research/cpp_pv_rt/src/fuzzy_execution.inc
+@@ -101,5 +101,5 @@
+             if (coherence_holdoff_ == 0U &&
+                 std::abs(wrap((frequency_[k]-frequency_[owners[k]])*hop))/hop > std::numbers::pi_v<float>/static_cast<float>(2U*(bins_-1U)))
+-                rotation=predicted_[k];
++                rotation=predicted_[phase_owner_refinement::select(k,bins_,hop,frequency_.data(),owners)];
+ #endif
+             if (refractory_[k]) --refractory_[k];
