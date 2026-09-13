@@ -11,6 +11,7 @@ std::uint32_t oracle(std::uint32_t k,std::uint32_t bins,float hop,const float* f
     auto result=k;float best=std::numbers::pi_v<float>/static_cast<float>(2U*(bins-1U));
     for(int offset=-4;offset<=4;++offset){
         auto n=static_cast<std::uint32_t>(std::clamp(int(k)+offset,0,int(bins)-1));auto candidate=owners[n];
+        if(float(std::abs(int(candidate)-int(k)))*hop>=float(bins-1U))continue;
         float d=std::abs(p::wrap((f[k]-f[candidate])*hop))/hop;
         if(d<best){best=d;result=candidate;}
     }
@@ -20,13 +21,15 @@ int main(){try{
     std::array<float,17> f{};std::array<std::uint32_t,17> owners{};
     owners.fill(3);f.fill(.1F);f[3]=.9F;f[8]=.4F;
     require(p::select(8,17,4.F,f.data(),owners.data())==8,"no compatible peak uses own bin");
-    owners[10]=12;f[12]=.401F;
-    require(p::select(8,17,4.F,f.data(),owners.data())==12,"neighbor peak selected");
-    f[12]=.4F+2.F*std::numbers::pi_v<float>/4.F;
-    require(p::select(8,17,4.F,f.data(),owners.data())==12,"hop alias is compatible");
+    owners[10]=10;f[10]=.401F;
+    require(p::select(8,17,4.F,f.data(),owners.data())==10,"neighbor peak selected");
+    f[10]=.4F+2.F*std::numbers::pi_v<float>/4.F;
+    require(p::select(8,17,4.F,f.data(),owners.data())==10,"nearby estimator alias is compatible");
+    owners[10]=12;f[12]=f[10];
+    require(p::select(8,17,4.F,f.data(),owners.data())==8,"distant alias match must not steal the bin");
     owners.fill(3);f[3]=.1F;f[0]=.1F;
     require(p::select(0,17,4.F,f.data(),owners.data())==3,"left edge clamps safely");
-    f[16]=.1F;require(p::select(16,17,4.F,f.data(),owners.data())==3,"right edge clamps safely");
+    owners.fill(13);f[13]=f[16]=.1F;require(p::select(16,17,4.F,f.data(),owners.data())==13,"right edge clamps safely");
     std::mt19937 rng(714041);unsigned checked=0;
     for(unsigned bins:{33U,513U,1025U})for(float hop:{64.F,256.F,512.F}){
         std::vector<float> frequencies(bins);std::vector<unsigned> own(bins);
