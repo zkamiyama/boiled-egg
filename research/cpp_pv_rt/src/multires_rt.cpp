@@ -375,10 +375,14 @@ private:
             for (std::uint32_t channel = 0U; channel < channels_; ++channel) {
                 const std::size_t base = static_cast<std::size_t>(channel) * fir_taps_;
                 double lowpass_difference = 0.0;
-                for (std::uint32_t tap = 0U; tap < fir_taps_; ++tap) {
-                    const std::size_t slot = (position + fir_taps_ - tap) % fir_taps_;
-                    lowpass_difference += static_cast<double>(lowpass_[tap]) * diff_history_[base + slot];
-                }
+                // Two reverse contiguous spans replace a variable integer
+                // remainder for every tap. Preserve tap/accumulation order
+                // exactly; this is not a reordered or symmetric FIR sum.
+                std::uint32_t tap = 0U;
+                for (std::size_t slot = position + 1U; slot != 0U; --slot, ++tap)
+                    lowpass_difference += static_cast<double>(lowpass_[tap]) * diff_history_[base + slot - 1U];
+                for (std::size_t slot = fir_taps_; tap < fir_taps_; --slot, ++tap)
+                    lowpass_difference += static_cast<double>(lowpass_[tap]) * diff_history_[base + slot - 1U];
                 const std::size_t delayed = (position + fir_taps_ - fir_half_) % fir_taps_;
                 output_frame_[channel] = high_history_[base + delayed] + static_cast<float>(lowpass_difference);
             }
