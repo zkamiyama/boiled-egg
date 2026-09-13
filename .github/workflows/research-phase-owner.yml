@@ -1,0 +1,76 @@
+name: research-phase-owner
+on:
+  push:
+    paths:
+      - 'research/cpp_pv_rt/**'
+      - 'research/experiments/fuzzy_coherence_guard*.patch'
+      - 'research/experiments/fuzzy_phase_owner_refinement.patch'
+      - 'research/experiments/phase_owner_refinement_test.cpp'
+      - 'research/eval_phase_owner_study.py'
+      - 'research/test_phase_owner_study.py'
+      - 'research/check_phase_owner_new_banks.py'
+      - 'requirements-dev.txt'
+      - '.github/workflows/research-phase-owner.yml'
+  pull_request:
+    paths:
+      - 'research/**'
+      - 'requirements-dev.txt'
+      - '.github/workflows/research-phase-owner.yml'
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  OPENBLAS_NUM_THREADS: 1
+  OMP_NUM_THREADS: 1
+jobs:
+  isolated-owner:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Apply research patches only in this checkout
+        run: |
+          mkdir validation
+          git rev-parse HEAD > validation/COMMIT.txt
+          git apply research/experiments/fuzzy_coherence_guard.patch
+          git apply research/experiments/fuzzy_coherence_guard_alias_fix.patch
+          git apply research/experiments/fuzzy_phase_owner_refinement.patch
+          git diff --binary > validation/applied.patch
+          git ls-files -z | xargs -0 sha256sum > validation/PATCHED_SOURCE_SHA256SUMS
+      - name: Build and test patched runtime
+        env:
+          COMPILER: ${{ matrix.compiler }}
+        run: |
+          if test "$COMPILER" = clang; then export CC=clang CXX=clang++; else export CC=gcc CXX=g++; fi
+          python -m pip install -r requirements-dev.txt
+          cmake -S research/cpp_pv_rt -B build-owner -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=20 \
+            -DCMAKE_CXX_FLAGS=-DBOILED_EGG_EXPERIMENT_COHERENCE_GUARD=1
+          cmake --build build-owner -j 2
+          ctest --test-dir build-owner --output-on-failure 2>&1 | tee validation/ctest.log
+          "$CXX" -O2 -std=c++20 research/experiments/phase_owner_refinement_test.cpp -o build-owner/owner-test
+          build-owner/owner-test | tee validation/owner-selection.log
+          export BOILED_EGG_PV_CLI="$PWD/build-owner/boiled_egg_pv_rt_cli"
+          export BOILED_EGG_MULTIRES_CLI="$PWD/build-owner/boiled_egg_multires_rt_cli"
+          PYTHONPATH="$PWD/research" python -W error::ResourceWarning -m unittest -v research/test_phase_owner_study.py 2>&1 | tee validation/study-tests.log
+      - name: Existing scheduled tonal and modulation thresholds
+        if: matrix.compiler == 'gcc'
+        run: |
+          python research/check_execution_quality.py --build "$PWD/build-owner" --output validation/tonal.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: phase-owner-${{ matrix.compiler }}-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7
