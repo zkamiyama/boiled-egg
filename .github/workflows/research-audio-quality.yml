@@ -1,0 +1,58 @@
+name: research-audio-quality
+
+on:
+  push:
+    paths: ['research/**', 'requirements-dev.txt', '.github/workflows/research-audio-quality.yml']
+  pull_request:
+    paths: ['research/**', 'requirements-dev.txt', '.github/workflows/research-audio-quality.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  OPENBLAS_NUM_THREADS: 1
+  OMP_NUM_THREADS: 1
+
+jobs:
+  metrics:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -r requirements-dev.txt
+      - name: Real research renderers and C ABI regression
+        run: |
+          cmake -S research/cpp_pv_rt -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=20
+          cmake --build build -j 2
+          ctest --test-dir build --output-on-failure
+      - name: Metric sensitivity and software regression
+        run: |
+          export BOILED_EGG_PV_CLI="$PWD/build/boiled_egg_pv_rt_cli"
+          export BOILED_EGG_MULTIRES_CLI="$PWD/build/boiled_egg_multires_rt_cli"
+          python -W error::ResourceWarning -m unittest discover -v -s research -p 'test_*.py'
+          python -W error::ResourceWarning -m unittest -v eval/test_tsm_dataset.py
+      - name: Descriptive smoke grid, not a perceptual quality gate
+        run: |
+          python research/eval_audio_quality.py \
+            --pv-cli "$PWD/build/boiled_egg_pv_rt_cli" \
+            --multires-cli "$PWD/build/boiled_egg_multires_rt_cli" \
+            --source-commit "$(git rev-parse HEAD)" --rates 48000 --shifts -12 0 12 \
+            --fixtures attack harmonics noise0 stereo70 vowel_a --workers 2 --output quality-smoke
+      - uses: actions/upload-artifact@v4
+        with:
+          name: objective-diagnostics-${{ matrix.python }}-${{ github.sha }}
+          path: quality-smoke/
+          if-no-files-found: error
+          retention-days: 7
