@@ -114,3 +114,57 @@
      double synthesis_position_{}, expected_pv_frames_{}, expected_output_frames_{}, resample_pos_{};
      std::uint64_t pv_start_{}, pv_write_{}, fifo_read_{}, fifo_write_{}, fifo_count_{}, target_pv_frames_{}, target_output_frames_{};
      bool initialized_{}, flushed_{};
+--- a/research/cpp_pv_rt/src/pv_execution.inc
++++ b/research/cpp_pv_rt/src/pv_execution.inc
+@@ -268,11 +268,19 @@
+         if (mode_ != BOILEDEGG_RESEARCH_PV_RT_CLASSIC) { while (peaks_task_.step()) co_yield true; }
+         const std::uint64_t previous_synth = previous_synth_start_;
+         const float synthesis_hop = initialized_ ? static_cast<float>(synth_start - previous_synth) : 0.0F;
++#ifdef BOILED_EGG_PV_RT_OVERLAP_GUARD
++        // Match the immediate path when this isolated patch shortens the hop.
++        const float analysis_delta = initialized_
++            ? static_cast<float>(analysis_start_ - previous_analysis_start_)
++            : static_cast<float>(analysis_hop_);
++#else
++        const float analysis_delta = static_cast<float>(analysis_hop_);
++#endif
+         const bool fuzzy_mode = mode_ >= BOILEDEGG_RESEARCH_PV_RT_FUZZY;
+         if (fuzzy_mode) {
+             fuzzy_.begin_sliced(linked_magnitude_.data(), previous_linked_magnitude_.data(),
+             magnitude_.data(), phase_.data(), previous_phase_.data(), owners_.data(),
+-            omega_.data(), channels_, analysis_hop_, synthesis_hop,
++            omega_.data(), channels_, static_cast<std::uint32_t>(analysis_delta), synthesis_hop,
+             static_cast<float>(internal_stretch()), initialized_,
+             mode_ == BOILEDEGG_RESEARCH_PV_RT_FUZZY, output_phase_.data());
+             while (fuzzy_.advance_sliced()) co_yield true;
+@@ -286,8 +294,8 @@
+                     if (!initialized_ || transient) {
+                         output_phase_[idx] = phase_[idx];
+                     } else {
+-                        const float delta = wrap_phase(phase_[idx] - previous_phase_[idx] - omega_[k] * static_cast<float>(analysis_hop_));
+-                        const float instantaneous = omega_[k] + delta / static_cast<float>(analysis_hop_);
++                        const float delta = wrap_phase(phase_[idx] - previous_phase_[idx] - omega_[k] * analysis_delta);
++                        const float instantaneous = omega_[k] + delta / analysis_delta;
+                         output_phase_[idx] = previous_output_phase_[idx] + instantaneous * synthesis_hop;
+                     }
+                 }
+@@ -355,8 +363,17 @@
+             initialized_ = true;
+         }
+         previous_synth_start_ = synth_start;
+-        synthesis_position_ += static_cast<double>(analysis_hop_) * internal_stretch();
+-        analysis_start_ += analysis_hop_;
++        std::uint32_t next_hop = analysis_hop_;
++#ifdef BOILED_EGG_PV_RT_OVERLAP_GUARD
++        const auto overlap_hop = static_cast<std::uint32_t>(std::max(
++            1.0, std::floor((static_cast<double>(n_fft_) *
++                static_cast<double>(BOILED_EGG_PV_RT_MAX_SYNTHESIS_HOP_PERCENT) / 100.0)
++                / internal_stretch())));
++        next_hop = std::min(next_hop, overlap_hop);
++#endif
++        previous_analysis_start_ = analysis_start_;
++        synthesis_position_ += static_cast<double>(next_hop) * internal_stretch();
++        analysis_start_ += next_hop;
+ 
+         co_yield false;
+     } }
