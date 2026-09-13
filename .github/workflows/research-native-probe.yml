@@ -1,0 +1,64 @@
+name: research-native-probe
+on:
+  workflow_dispatch:
+  push:
+    paths: ['.github/workflows/research-native-probe.yml']
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Official evaluation and public SDK
+        shell: bash
+        run: |
+          mkdir -p deps native-evidence
+          sudo apt-get update -qq
+          sudo apt-get install -y xvfb libgtk-3-0 libasound2t64 libjack-jackd2-0
+          curl --fail --location --retry 2 https://www.reaper.fm/files/7.x/reaper779_linux_x86_64.tar.xz -o deps/reaper.tar.xz
+          sha256sum deps/reaper.tar.xz > native-evidence/REAPER_DOWNLOAD_SHA256.txt
+          tar -xJf deps/reaper.tar.xz -C deps
+          git clone --depth 1 https://github.com/justinfrankel/reaper-sdk.git deps/reaper-sdk
+          git clone --depth 1 https://github.com/justinfrankel/WDL.git deps/reaper-sdk/WDL
+          git -C deps/reaper-sdk rev-parse HEAD > native-evidence/SDK_COMMIT.txt
+          git -C deps/reaper-sdk/WDL rev-parse HEAD > native-evidence/WDL_COMMIT.txt
+          printf 'Official REAPER 7.79, ordinary evaluation only. No license bypass, no binary redistribution.\nhttps://www.reaper.fm/download.php\n' > native-evidence/ORIGIN.txt
+      - name: Compile documented host API extension
+        run: |
+          mkdir -p "$HOME/.config/REAPER/UserPlugins"
+          g++ -std=c++20 -O2 -fPIC -shared -I deps/reaper-sdk/sdk -I research/cpp_pv_rt/src \
+            research/native_reaper_probe.cpp research/cpp_pv_rt/src/wav.cpp \
+            -o "$HOME/.config/REAPER/UserPlugins/reaper_boiled_native.so"
+          sha256sum "$HOME/.config/REAPER/UserPlugins/reaper_boiled_native.so" deps/reaper_linux_x86_64/REAPER/reaper > native-evidence/EXECUTABLE_SHA256.txt
+      - name: Enumerate native engine and formant modes
+        shell: bash
+        run: |
+          export BOILED_NATIVE_DIR="$PWD/native-evidence"
+          xvfb-run -a deps/reaper_linux_x86_64/REAPER/reaper -new -nosplash > native-evidence/host.log 2>&1 &
+          launcher=$!
+          for attempt in $(seq 1 120); do
+            test -f native-evidence/DONE.txt && break
+            test -f native-evidence/ERROR.txt && break
+            kill -0 "$launcher" 2>/dev/null || break
+            sleep 1
+          done
+          pkill -TERM -f '^deps/reaper_linux_x86_64/REAPER/reaper' || true
+          test -f native-evidence/DONE.txt
+          test ! -f native-evidence/ERROR.txt
+          cat native-evidence/host-version.txt native-evidence/modes.tsv
+      - name: Record source identity
+        if: always()
+        run: |
+          mkdir -p native-evidence
+          git rev-parse HEAD > native-evidence/SOURCE_COMMIT.txt
+          sha256sum research/native_reaper_probe.cpp > native-evidence/PROBE_SHA256.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-engine-probe-${{ github.sha }}
+          path: native-evidence/
+          retention-days: 7
