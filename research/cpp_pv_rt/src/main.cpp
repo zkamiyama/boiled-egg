@@ -1,6 +1,7 @@
 #include "boiled_egg_pv_rt.h"
 #include "wav.hpp"
 #include "feature_cli.hpp"
+#include "execution_cli.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -41,8 +42,10 @@ int main(int argc, char** argv) {
         float transient_floor = 0.12F;
         float transient_sigma = 2.5F;
         auto features = boiledegg_research_default_features();
+        auto execution = boiledegg_research_default_execution();
         for (int i = 3; i < argc; ++i) {
             if (parse_feature_option(i, argc, argv, features)) continue;
+            if (parse_execution_option(i, argc, argv, execution)) continue;
             const std::string argument = argv[i];
             if (argument == "--time" && i + 1 < argc) ratio = std::stof(argv[++i]);
             else if (argument == "--pitch-ratio" && i + 1 < argc) pitch_ratio = std::stof(argv[++i]);
@@ -95,7 +98,7 @@ int main(int argc, char** argv) {
         if (hop_override != 0U) config.analysis_hop = hop_override;
         config.transient_floor = transient_floor;
         config.transient_sigma = transient_sigma;
-        boiledegg_research_pv_rt_handle* handle = boiledegg_research_pv_rt_create_ex(&config, &features, &result);
+        boiledegg_research_pv_rt_handle* handle = boiledegg_research_pv_rt_create_exec(&config, &features, &execution, &result);
         if (!handle) throw std::runtime_error(boiledegg_research_pv_rt_result_string(result));
 
         std::vector<std::vector<float>> input(audio.channels, std::vector<float>(block));

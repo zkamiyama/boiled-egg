@@ -1,6 +1,7 @@
 #include "boiled_egg_multires_rt.h"
 #include "wav.hpp"
 #include "feature_cli.hpp"
+#include "execution_cli.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -30,8 +31,10 @@ int main(int argc, char** argv) {
         float crossover = 6500.0F;
         std::uint32_t taps = 129U;
         auto features = boiledegg_research_default_features();
+        auto execution = boiledegg_research_default_execution();
         for (int i = 3; i < argc; ++i) {
             if (parse_feature_option(i, argc, argv, features)) continue;
+            if (parse_execution_option(i, argc, argv, execution)) continue;
             const std::string argument = argv[i];
             if (argument == "--time" && i + 1 < argc) time_ratio = std::stof(argv[++i]);
             else if (argument == "--pitch-ratio" && i + 1 < argc) pitch_ratio = std::stof(argv[++i]);
@@ -60,7 +63,7 @@ int main(int argc, char** argv) {
         config.crossover_hz = crossover;
         config.fir_taps = taps;
         boiledegg_research_pv_rt_result result{};
-        auto* handle = boiledegg_research_multires_rt_create_ex(&config, &features, &result);
+        auto* handle = boiledegg_research_multires_rt_create_exec(&config, &features, &execution, &result);
         if (handle == nullptr) throw std::runtime_error(boiledegg_research_pv_rt_result_string(result));
 
         std::vector<std::vector<float>> input(audio.channels, std::vector<float>(block));
