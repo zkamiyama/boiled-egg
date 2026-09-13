@@ -2,6 +2,8 @@
 #include "fft.hpp"
 #include "fuzzy_phase.hpp"
 #include "research_features.hpp"
+#include "execution_helpers.hpp"
+#include "work_sequence.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -100,7 +102,8 @@ const resampler_kernel_bank& kernels() {
 
 class engine {
 public:
-    explicit engine(const boiledegg_research_pv_rt_config& config, const boiledegg_research_features& features)
+    explicit engine(const boiledegg_research_pv_rt_config& config, const boiledegg_research_features& features,
+                    const boiledegg_research_execution& execution)
         : sample_rate_(config.sample_rate), channels_(config.channels), max_block_(config.max_block_frames),
           n_fft_(config.fft_size), bins_(n_fft_ / 2U + 1U), analysis_hop_(config.analysis_hop),
           mode_(static_cast<boiledegg_research_pv_rt_mode>(config.mode)),
@@ -136,6 +139,16 @@ public:
         }
         for (std::uint32_t k = 0; k < bins_; ++k) omega_[k] = scale * static_cast<float>(k);
         (void)kernels(); // precompute resampler tables during construction, never in the hot path
+        scheduled_=execution.scheduled!=0;
+        simd_=execution.simd!=0;
+        if (scheduled_) {
+            // Conservative finite work budget. Scheduler overruns are reported,
+            // not hidden by synchronously finishing a late frame in push().
+            unsigned levels=0; for(auto n=n_fft_;n>1;n>>=1) ++levels;
+            steps_per_input_=2U + (n_fft_*(channels_+1U)*(levels+20U)+128U*analysis_hop_-1U)/(128U*analysis_hop_);
+            frame_task_=frame_sequence(); formant_task_=formant_sequence(); peaks_task_=peaks_sequence();
+            if (mode_>=BOILEDEGG_RESEARCH_PV_RT_FUZZY) fuzzy_.enable_slicing();
+        }
         reset();
     }
 
@@ -157,6 +170,8 @@ public:
     }
 
     void reset() noexcept {
+        finish_task();
+        completed_frames_=frame_overruns_=max_frame_steps_=current_steps_=0;
         fuzzy_.reset();
         smoothed_formant_ratio_ = formant_ratio_;
         std::fill(input_.begin(), input_.end(), 0.0F);
@@ -195,7 +210,9 @@ public:
 
     boiledegg_research_pv_rt_result set_time_ratio(float value) noexcept {
         if (!finite_ratio(value) || flushed_) return flushed_ ? BOILEDEGG_RESEARCH_PV_RT_ALREADY_FLUSHED : BOILEDEGG_RESEARCH_PV_RT_INVALID_ARGUMENT;
+        if (scheduled_ && value != 1.0F) return BOILEDEGG_RESEARCH_PV_RT_INVALID_ARGUMENT;
         time_ratio_ = value;
+        if (scheduled_) { update_startup_crop(); return BOILEDEGG_RESEARCH_PV_RT_OK; }
         update_startup_crop();
         drain_safe(false);
         process_resampler(false);
@@ -204,7 +221,10 @@ public:
 
     boiledegg_research_pv_rt_result set_pitch_ratio(float value) noexcept {
         if (!finite_ratio(value) || flushed_) return flushed_ ? BOILEDEGG_RESEARCH_PV_RT_ALREADY_FLUSHED : BOILEDEGG_RESEARCH_PV_RT_INVALID_ARGUMENT;
+        if (scheduled_ && (value < 0.5F || value > 2.0F || (real_input_frames_ && value != pitch_ratio_)))
+            return BOILEDEGG_RESEARCH_PV_RT_INVALID_ARGUMENT;
         pitch_ratio_ = value;
+        if (scheduled_) { update_startup_crop(); return BOILEDEGG_RESEARCH_PV_RT_OK; }
         update_startup_crop();
         drain_safe(false);
         process_resampler(false);
@@ -217,7 +237,7 @@ public:
             (formant_mode_ == BOILEDEGG_RESEARCH_PV_RT_FORMANT_OFF && value != 1.0F))
             return BOILEDEGG_RESEARCH_PV_RT_INVALID_ARGUMENT;
         formant_ratio_ = value;
-        if (!initialized_) smoothed_formant_ratio_ = value;
+        if (!initialized_ && !frame_active_) smoothed_formant_ratio_ = value;
         return BOILEDEGG_RESEARCH_PV_RT_OK;
     }
     [[nodiscard]] float formant_ratio() const noexcept { return formant_ratio_; }
@@ -235,11 +255,13 @@ public:
             ++real_input_frames_;
             expected_output_frames_ += static_cast<double>(time_ratio_);
             expected_pv_frames_ += internal_stretch();
-            process_available();
+            if (scheduled_) { if (!tick()) return BOILEDEGG_RESEARCH_PV_RT_INTERNAL_ERROR; }
+            else process_available();
             drain_safe(false);
             process_resampler(false);
             if (fifo_count_ >= fifo_capacity_) return BOILEDEGG_RESEARCH_PV_RT_FIFO_OVERFLOW;
         }
+        if (scheduled_) return BOILEDEGG_RESEARCH_PV_RT_OK;
         process_available();
         drain_safe(false);
         process_resampler(false);
@@ -251,6 +273,7 @@ public:
         flushed_ = true;
         target_pv_frames_ = round_u64(expected_pv_frames_);
         target_output_frames_ = round_u64(expected_output_frames_);
+        finish_task();
         const std::uint64_t timeline_target = startup_crop_ + target_pv_frames_;
         std::uint64_t guard = 0;
         const std::uint64_t guard_limit = static_cast<std::uint64_t>(n_fft_) * 96U + target_pv_frames_ * 2U + 131072U;
@@ -276,7 +299,7 @@ public:
     std::uint32_t pull(float* const* output, std::uint32_t capacity) noexcept {
         if (capacity != 0U && output == nullptr) return 0U;
         for (std::uint32_t ch = 0; ch < channels_; ++ch) if (capacity != 0U && output[ch] == nullptr) return 0U;
-        process_resampler(flushed_ && pv_emitted_frames_ == target_pv_frames_);
+        if (!scheduled_ || flushed_) process_resampler(flushed_ && pv_emitted_frames_ == target_pv_frames_);
         const std::uint32_t count = static_cast<std::uint32_t>(std::min<std::uint64_t>(capacity, fifo_count_));
         for (std::uint32_t i = 0; i < count; ++i) {
             const std::size_t slot = static_cast<std::size_t>((fifo_read_ + i) % fifo_capacity_);
@@ -285,7 +308,7 @@ public:
         }
         fifo_read_ = (fifo_read_ + count) % fifo_capacity_;
         fifo_count_ -= count;
-        process_resampler(flushed_ && pv_emitted_frames_ == target_pv_frames_);
+        if (!scheduled_ || flushed_) process_resampler(flushed_ && pv_emitted_frames_ == target_pv_frames_);
         return count;
     }
 
@@ -322,13 +345,19 @@ private:
     }
     [[nodiscard]] bool full_analysis_frame() const noexcept { return input_write_ >= analysis_start_ + n_fft_; }
     [[nodiscard]] bool ensure_input_space() noexcept {
+        if (scheduled_) return input_write_ - analysis_start_ < input_capacity_ - 1U;
         while (input_write_ - analysis_start_ >= input_capacity_ - 1U) {
             if (!full_analysis_frame()) return false;
             process_frame();
         }
         return true;
     }
-    void process_available() noexcept { while (full_analysis_frame()) process_frame(); }
+    void process_available() noexcept {
+        while (full_analysis_frame()) {
+            if (scheduled_) { if (!frame_active_) start_task(); finish_task(); }
+            else process_frame();
+        }
+    }
 
     void find_peaks() noexcept {
         peak_count_ = 0;
@@ -370,7 +399,7 @@ private:
             envelope_work_[k] = {std::log(std::max(linked_magnitude_[k], 1.0e-7F)), 0.0F};
         for (std::uint32_t k = bins_; k < n_fft_; ++k)
             envelope_work_[k] = envelope_work_[n_fft_ - k];
-        fft_.inverse(envelope_work_.data());
+        transform(envelope_work_.data(), true);
 
         float f0_hz = 0.0F;
         float voiced_confidence = 0.0F;
@@ -409,7 +438,7 @@ private:
                 envelope_work_[q] *= w;
             }
         }
-        fft_.forward(envelope_work_.data());
+        transform(envelope_work_.data(), false);
         for (std::uint32_t k = 0; k < bins_; ++k) log_envelope_[k] = envelope_work_[k].real();
 
         constexpr float db_per_neper = 20.0F / 2.302585092994046F;
@@ -487,7 +516,7 @@ private:
                 const std::size_t slot = static_cast<std::size_t>((analysis_start_ + n) % input_capacity_);
                 work[n] = {input_[static_cast<std::size_t>(ch) * input_capacity_ + slot] * window_[n], 0.0F};
             }
-            fft_.forward(work);
+            transform(work, false);
             for (std::uint32_t k = 0; k < bins_; ++k) {
                 const std::size_t idx = static_cast<std::size_t>(ch) * bins_ + k;
                 magnitude_[idx] = std::abs(work[k]);
@@ -551,7 +580,7 @@ private:
                 work[k] = std::polar(magnitude_[idx] * formant_gain_[k], output_phase_[idx]);
             }
             for (std::uint32_t k = bins_; k < n_fft_; ++k) work[k] = std::conj(work[n_fft_ - k]);
-            fft_.inverse(work);
+            transform(work, true);
             for (std::uint32_t n = 0; n < n_fft_; ++n) {
                 const std::uint64_t absolute = synth_start + n;
                 const std::size_t slot = static_cast<std::size_t>(absolute % ola_capacity_);
@@ -598,7 +627,8 @@ private:
             : static_cast<std::uint64_t>(std::floor(std::max(0.0, expected_pv_frames_)));
         const std::uint64_t timeline_limit = startup_crop_ + max_emit;
         const std::uint64_t target = std::min(latest_safe_position_, timeline_limit);
-        while (cleanup_position_ < target) {
+        std::uint32_t budget=(scheduled_ && !flushed_)?8U:std::numeric_limits<std::uint32_t>::max();
+        while (cleanup_position_ < target && budget--) {
             const std::size_t slot = static_cast<std::size_t>(cleanup_position_ % ola_capacity_);
             if (cleanup_position_ >= startup_crop_) {
                 if (pv_free() == 0U) {
@@ -633,8 +663,9 @@ private:
         if (fifo_count_ >= fifo_capacity_) return;
         const std::uint64_t output_limit = finalizing ? target_output_frames_
             : static_cast<std::uint64_t>(std::floor(std::max(0.0, expected_output_frames_)));
+        std::uint32_t budget=(scheduled_ && !flushed_)?2U:std::numeric_limits<std::uint32_t>::max();
         if (std::abs(pitch_ratio_ - 1.0F) < 1.0e-7F) {
-            while (pv_start_ < pv_write_ && emitted_frames_ < output_limit && fifo_count_ < fifo_capacity_) {
+            while (pv_start_ < pv_write_ && emitted_frames_ < output_limit && fifo_count_ < fifo_capacity_ && budget--) {
                 const std::size_t source_slot = static_cast<std::size_t>(pv_start_ % pv_capacity_);
                 const std::size_t dst_slot = static_cast<std::size_t>(fifo_write_ % fifo_capacity_);
                 for (std::uint32_t ch = 0; ch < channels_; ++ch)
@@ -651,7 +682,7 @@ private:
         const auto& bank = kernels();
         const double desired_cutoff = 0.94 * std::min(1.0, 1.0 / static_cast<double>(pitch_ratio_));
         const int cutoff_index = resampler_kernel_bank::cutoff_index(desired_cutoff);
-        while (emitted_frames_ < output_limit && fifo_count_ < fifo_capacity_) {
+        while (emitted_frames_ < output_limit && fifo_count_ < fifo_capacity_ && budget--) {
             const std::int64_t center = static_cast<std::int64_t>(std::floor(resample_pos_));
             if (!finalizing && center + k_resampler_half + 1 >= static_cast<std::int64_t>(pv_write_)) break;
             if (finalizing && center - k_resampler_half > static_cast<std::int64_t>(pv_write_) + k_resampler_half) break;
@@ -674,6 +705,18 @@ private:
         }
     }
 
+#include "pv_execution.inc"
+public:
+    boiledegg_research_execution_stats stats() const noexcept {
+        return {sizeof(boiledegg_research_execution_stats),steps_per_input_,completed_frames_,frame_overruns_,max_frame_steps_};
+    }
+private:
+    bool scheduled_{}, simd_{}, frame_active_{};
+    std::uint32_t steps_per_input_{};
+    std::uint64_t completed_frames_{},frame_overruns_{},max_frame_steps_{},current_steps_{};
+    float frame_formant_target_{1.0F};
+    fft_plan::cursor fft_cursor_{};
+    work_sequence frame_task_,formant_task_,peaks_task_;
     std::uint32_t sample_rate_{}, channels_{}, max_block_{}, n_fft_{}, bins_{}, analysis_hop_{};
     boiledegg_research_pv_rt_mode mode_{};
     boiledegg_research_pv_rt_formant_mode formant_mode_{};
@@ -736,8 +779,25 @@ boiledegg_research_features boiledegg_research_default_features(void) {
 boiledegg_research_pv_rt_handle* boiledegg_research_pv_rt_create_ex(
     const boiledegg_research_pv_rt_config* config, const boiledegg_research_features* features,
     boiledegg_research_pv_rt_result* result) {
+    const auto execution=boiledegg_research_default_execution();
+    return boiledegg_research_pv_rt_create_exec(config,features,&execution,result);
+}
+boiledegg_research_execution boiledegg_research_default_execution(void) {
+    return {sizeof(boiledegg_research_execution),BOILEDEGG_RESEARCH_EXECUTION_VERSION,0,0};
+}
+uint32_t boiledegg_research_simd_available(void) { return boiled_egg::research::detail::fft_plan::simd_available(); }
+boiledegg_research_pv_rt_result boiledegg_research_pv_rt_execution_stats(
+    const boiledegg_research_pv_rt_handle* h, boiledegg_research_execution_stats* stats) {
+    if (!h || !h->engine || !stats || stats->struct_size<sizeof(*stats)) return BOILEDEGG_RESEARCH_PV_RT_INVALID_ARGUMENT;
+    *stats=h->engine->stats(); return BOILEDEGG_RESEARCH_PV_RT_OK;
+}
+boiledegg_research_pv_rt_handle* boiledegg_research_pv_rt_create_exec(
+    const boiledegg_research_pv_rt_config* config, const boiledegg_research_features* features,
+    const boiledegg_research_execution* execution, boiledegg_research_pv_rt_result* result) {
     if (result) *result = BOILEDEGG_RESEARCH_PV_RT_INVALID_CONFIG;
     if (!config || config->struct_size < sizeof(*config) || !boiled_egg::research::features::valid(features, config->formant_mode)) return nullptr;
+    if (!boiled_egg::research::execution::valid(execution,config->initial_time_ratio,config->initial_pitch_ratio) ||
+        (execution->scheduled && config->analysis_hop<64U)) return nullptr;
     auto scaled = *config;
     if (!boiled_egg::research::detail::engine::valid(scaled) ||
         !boiled_egg::research::features::scale_pv(scaled, *features) ||
@@ -747,7 +807,7 @@ boiledegg_research_pv_rt_handle* boiledegg_research_pv_rt_create_ex(
     }
     try {
         auto* h = new boiledegg_research_pv_rt_handle;
-        try { h->engine = new boiled_egg::research::detail::engine(scaled, *features); }
+        try { h->engine = new boiled_egg::research::detail::engine(scaled, *features, *execution); }
         catch (...) { delete h; throw; }
         if (result) *result = BOILEDEGG_RESEARCH_PV_RT_OK;
         return h;

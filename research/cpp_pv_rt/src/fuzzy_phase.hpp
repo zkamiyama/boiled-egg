@@ -1,6 +1,7 @@
 #ifndef BOILED_EGG_RESEARCH_FUZZY_PHASE_HPP
 #define BOILED_EGG_RESEARCH_FUZZY_PHASE_HPP
 
+#include "work_sequence.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -161,6 +162,7 @@ public:
     [[nodiscard]] membership bin(std::uint32_t k) const noexcept { return membership_[k]; }
 
 private:
+#include "fuzzy_execution.inc"
     static void replace_sorted(float* data, std::size_t size, float outgoing, float incoming) noexcept {
         // Finite nonnegative magnitudes; exactly one copy of outgoing exists.
         // All loops are bounded by size (9 in time, at most 63 in frequency).
