@@ -40,7 +40,26 @@
          target_compile_features(boiled_egg_${test} PRIVATE cxx_std_20)
 --- a/research/cpp_pv_rt/src/pv_rt.cpp
 +++ b/research/cpp_pv_rt/src/pv_rt.cpp
-@@ -164,6 +164,7 @@
+@@ -147,7 +147,17 @@
+             unsigned levels=0; for(auto n=n_fft_;n>1;n>>=1) ++levels;
+             steps_per_input_=2U + (n_fft_*(channels_+1U)*(levels+20U)+128U*analysis_hop_-1U)/(128U*analysis_hop_);
+             const auto step_bound=execution::frame_step_bound(n_fft_,channels_,formant_mode_,mode_);
+-            steps_per_input_=std::max(steps_per_input_,(step_bound+analysis_hop_-1U)/analysis_hop_);
++            auto budget_hop=analysis_hop_;
++#ifdef BOILED_EGG_PV_RT_OVERLAP_GUARD
++            // Scheduled pitch may be changed before the first sample. Budget
++            // against the shortest possible guarded hop at the allowed p=2,
++            // not the nominal analysis hop, for both first and later frames.
++            const auto shortest_guarded_hop=static_cast<std::uint32_t>(std::max(
++                1.0,std::floor(static_cast<double>(n_fft_) *
++                static_cast<double>(BOILED_EGG_PV_RT_MAX_SYNTHESIS_HOP_PERCENT)/200.0)));
++            budget_hop=std::min(budget_hop,shortest_guarded_hop);
++#endif
++            steps_per_input_=std::max(steps_per_input_,(step_bound+budget_hop-1U)/budget_hop);
+             frame_task_=frame_sequence(); formant_task_=formant_sequence(); peaks_task_=peaks_sequence();
+             if (mode_>=BOILEDEGG_RESEARCH_PV_RT_FUZZY) fuzzy_.enable_slicing();
+         }
+@@ -186,6 +196,7 @@
          std::fill(previous_linked_magnitude_.begin(), previous_linked_magnitude_.end(), 0.0F);
          input_write_ = n_fft_ / 2U;
          analysis_start_ = 0;
@@ -48,7 +67,7 @@
          synthesis_position_ = 0.0;
          latest_safe_position_ = 0;
          cleanup_position_ = 0;
-@@ -485,11 +486,20 @@
+@@ -547,11 +558,20 @@
          if (mode_ != BOILEDEGG_RESEARCH_PV_RT_CLASSIC) find_peaks();
          const std::uint64_t previous_synth = previous_synth_start_;
          const float synthesis_hop = initialized_ ? static_cast<float>(synth_start - previous_synth) : 0.0F;
@@ -70,7 +89,7 @@
                  static_cast<float>(internal_stretch()), initialized_,
                  mode_ == BOILEDEGG_RESEARCH_PV_RT_FUZZY, output_phase_.data());
          }
-@@ -500,8 +510,8 @@
+@@ -562,8 +582,8 @@
                  if (!initialized_ || transient) {
                      output_phase_[idx] = phase_[idx];
                  } else {
@@ -81,7 +100,7 @@
                      output_phase_[idx] = previous_output_phase_[idx] + instantaneous * synthesis_hop;
                  }
              }
-@@ -548,8 +558,21 @@
+@@ -610,8 +630,21 @@
              initialized_ = true;
          }
          previous_synth_start_ = synth_start;
@@ -105,7 +124,7 @@
      }
  
      [[nodiscard]] std::uint64_t pv_count() const noexcept { return pv_write_ - pv_start_; }
-@@ -657,7 +680,7 @@
+@@ -736,7 +769,7 @@
      std::vector<std::uint32_t> peaks_, owners_;
      fuzzy_phase fuzzy_;
      std::uint32_t peak_count_{};
