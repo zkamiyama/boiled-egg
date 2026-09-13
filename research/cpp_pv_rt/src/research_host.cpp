@@ -1,5 +1,6 @@
 #include "boiled_egg_research_host.h"
 #include "research_features.hpp"
+#include "host_latency_bound.hpp"
 #include <algorithm>
 #include <atomic>
 #include <bit>
@@ -32,7 +33,7 @@ struct boiledegg_research_host_handle {
     std::uint32_t latency{};
     std::uint64_t clock{},events_applied{},underruns{};
     bool fault{};
-    explicit boiledegg_research_host_handle(const boiledegg_research_host_config& c):config(c) {
+    explicit boiledegg_research_host_handle(const boiledegg_research_host_config& c,bool compact=false):config(c) {
         auto f=boiledegg_research_default_features();f.timing_policy=1;f.rate_policy=1;f.initial_formant_ratio=c.formant_ratio;
         auto e=boiledegg_research_default_execution();e.scheduled=c.scheduled;e.simd=c.simd;
         result status{};
@@ -59,6 +60,7 @@ struct boiledegg_research_host_handle {
         // caller block size and the SIMD choice. It is verified by delayed
         // waveform equality, not confused with pv_latency_frames()'s hint.
         latency=(2U*n+2U*hop+128U+(multi?64U*scale:0U)+31U)&~31U;
+        if(compact)latency=boiled_egg::research::detail::compact_host_latency(scale,c.profile,c.pitch_ratio);
         target.store(std::bit_cast<std::uint32_t>(c.formant_ratio),std::memory_order_relaxed);
     }
     ~boiledegg_research_host_handle(){boiledegg_research_pv_rt_destroy(pv);boiledegg_research_multires_rt_destroy(multi);}
@@ -120,6 +122,17 @@ boiledegg_research_host_config boiledegg_research_host_default_config(uint32_t r
 boiledegg_research_host_handle* boiledegg_research_host_create(const boiledegg_research_host_config* c,result* status) {
     if(status)*status=BOILEDEGG_RESEARCH_PV_RT_INVALID_CONFIG;if(!valid(c))return nullptr;
     try {auto* h=new boiledegg_research_host_handle(*c);if(status)*status=ok;return h;}
+    catch(result r){if(status)*status=r;}catch(const std::bad_alloc&){if(status)*status=BOILEDEGG_RESEARCH_PV_RT_OUT_OF_MEMORY;}
+    catch(...){if(status)*status=internal;}return nullptr;
+}
+uint32_t boiledegg_research_host_compact_latency(const boiledegg_research_host_config* c) {
+    if(!valid(c))return 0;
+    auto f=boiledegg_research_default_features();f.rate_policy=1;
+    return boiled_egg::research::detail::compact_host_latency(boiled_egg::research::features::scale(c->sample_rate,f),c->profile,c->pitch_ratio);
+}
+boiledegg_research_host_handle* boiledegg_research_host_create_compact(const boiledegg_research_host_config* c,result* status) {
+    if(status)*status=BOILEDEGG_RESEARCH_PV_RT_INVALID_CONFIG;if(!valid(c))return nullptr;
+    try {auto* h=new boiledegg_research_host_handle(*c,true);if(status)*status=ok;return h;}
     catch(result r){if(status)*status=r;}catch(const std::bad_alloc&){if(status)*status=BOILEDEGG_RESEARCH_PV_RT_OUT_OF_MEMORY;}
     catch(...){if(status)*status=internal;}return nullptr;
 }

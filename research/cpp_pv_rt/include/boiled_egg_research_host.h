@@ -42,6 +42,12 @@ typedef struct boiledegg_research_host_state {
 typedef struct boiledegg_research_host_handle boiledegg_research_host_handle;
 boiledegg_research_host_config boiledegg_research_host_default_config(uint32_t rate,uint32_t channels,uint32_t block);
 boiledegg_research_host_handle* boiledegg_research_host_create(const boiledegg_research_host_config*,boiledegg_research_pv_rt_result*);
+/* Opt-in pitch-aware conservative availability bound. Same ABI/config and
+ * event semantics; legacy create() retains its old fixed delay. The bound
+ * assumes the declared zero-overrun scheduling contract, not a CPU guarantee.
+ * Query before activation; invalid config returns0. */
+uint32_t boiledegg_research_host_compact_latency(const boiledegg_research_host_config*);
+boiledegg_research_host_handle* boiledegg_research_host_create_compact(const boiledegg_research_host_config*,boiledegg_research_pv_rt_result*);
 void boiledegg_research_host_destroy(boiledegg_research_host_handle*);
 boiledegg_research_pv_rt_result boiledegg_research_host_reset(boiledegg_research_host_handle*);
 /* Exactly frames output on success, including initial latency zeros. Null input

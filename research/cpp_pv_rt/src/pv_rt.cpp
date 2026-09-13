@@ -146,6 +146,8 @@ public:
             // not hidden by synchronously finishing a late frame in push().
             unsigned levels=0; for(auto n=n_fft_;n>1;n>>=1) ++levels;
             steps_per_input_=2U + (n_fft_*(channels_+1U)*(levels+20U)+128U*analysis_hop_-1U)/(128U*analysis_hop_);
+            const auto step_bound=execution::frame_step_bound(n_fft_,channels_,formant_mode_,mode_);
+            steps_per_input_=std::max(steps_per_input_,(step_bound+analysis_hop_-1U)/analysis_hop_);
             frame_task_=frame_sequence(); formant_task_=formant_sequence(); peaks_task_=peaks_sequence();
             if (mode_>=BOILEDEGG_RESEARCH_PV_RT_FUZZY) fuzzy_.enable_slicing();
         }
