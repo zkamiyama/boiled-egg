@@ -11,7 +11,10 @@ namespace boiled_egg::research::detail::phase_owner_refinement {
 // Arrays have bins entries, bins>=2, hop>0, and every owner is in [0,bins).
 // Frequencies are radians/input sample; compare modulo analysis-hop aliases.
 // A +/-4-bin neighborhood is fixed, allocation-free and independent of channel
-// count. Preserve the original own-bin fallback when no compatible peak exists.
+// count. A newly selected peak must lie strictly within half the phase-alias
+// period in bin coordinates: |candidate-k| < FFT/(2*hop). Modulo compatibility
+// alone cannot distinguish a remote partial an entire alias period away.
+// Preserve the original own-bin fallback when no unambiguous peak exists.
 inline float wrap(float value) noexcept {
     constexpr float pi=std::numbers::pi_v<float>;
     value=std::fmod(value+pi,2.0F*pi);
@@ -28,6 +31,8 @@ inline std::uint32_t select(std::uint32_t k,std::uint32_t bins,float hop,
         const auto candidate=owners[neighbor];
         if(candidate==previous)continue;
         previous=candidate;
+        if(static_cast<float>(std::abs(static_cast<int>(candidate)-static_cast<int>(k)))*hop >=
+           static_cast<float>(bins-1U))continue;
         const float distance=std::abs(wrap((frequency[k]-frequency[candidate])*hop))/hop;
         if(distance<best){best=distance;selected=candidate;}
     }
