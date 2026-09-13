@@ -3,6 +3,7 @@
 
 #include "boiled_egg_pv_rt.h"
 #include "boiled_egg_research_features.h"
+#include "boiled_egg_research_execution.h"
 #include <stdexcept>
 #include <utility>
 
@@ -29,6 +30,16 @@ inline boiledegg_research_pv_rt_config pv_rt_profile_config(
 
 class pv_rt_engine {
 public:
+    pv_rt_engine(const boiledegg_research_pv_rt_config& config,
+                const boiledegg_research_features& features, const boiledegg_research_execution& execution) {
+        boiledegg_research_pv_rt_result result{};
+        handle_ = boiledegg_research_pv_rt_create_exec(&config, &features, &execution, &result);
+        if (!handle_) throw std::runtime_error(boiledegg_research_pv_rt_result_string(result));
+    }
+    [[nodiscard]] boiledegg_research_execution_stats execution_stats() const noexcept {
+        boiledegg_research_execution_stats stats{sizeof(stats),0,0,0,0};
+        (void)boiledegg_research_pv_rt_execution_stats(handle_, &stats); return stats;
+    }
     pv_rt_engine(const boiledegg_research_pv_rt_config& config,
                 const boiledegg_research_features& features) {
         boiledegg_research_pv_rt_result result{};
