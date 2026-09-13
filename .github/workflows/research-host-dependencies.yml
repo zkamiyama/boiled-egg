@@ -1,0 +1,30 @@
+name: research-host-dependencies
+on:
+  workflow_dispatch:
+  push:
+    paths: ['.github/workflows/research-host-dependencies.yml']
+permissions:
+  contents: read
+jobs:
+  pinned-headers:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Obtain pinned public SDK sources
+        shell: bash
+        run: |
+          mkdir dependencies replay
+          git clone --depth 1 --branch 1.2.10 https://github.com/free-audio/clap.git dependencies/clap
+          git clone --filter=blob:none --no-checkout https://github.com/steinbergmedia/vst3sdk.git dependencies/vst3sdk
+          git -C dependencies/vst3sdk checkout 9fad9770f2ae8542ab1a548a68c1ad1ac690abe0
+          git -C dependencies/vst3sdk submodule update --init --depth 1 base cmake pluginterfaces public.sdk
+          git -C dependencies/clap rev-parse HEAD > replay/CLAP_COMMIT.txt
+          git -C dependencies/vst3sdk rev-parse HEAD > replay/VST3_COMMIT.txt
+          git -C dependencies/vst3sdk submodule status > replay/VST3_SUBMODULES.txt
+          tar --exclude=.git -czf replay/host-dependencies.tar.gz dependencies
+          (cd replay && sha256sum host-dependencies.tar.gz > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pinned-research-host-dependencies
+          path: replay/
+          if-no-files-found: error
+          retention-days: 7
