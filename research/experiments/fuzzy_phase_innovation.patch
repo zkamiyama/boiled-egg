@@ -1,0 +1,80 @@
+--- a/research/cpp_pv_rt/src/fuzzy_phase.hpp
++++ b/research/cpp_pv_rt/src/fuzzy_phase.hpp
+@@ -3,6 +3,7 @@
+ 
+ #include "work_sequence.hpp"
+ #include "phase_owner_refinement.hpp"
++#include "phase_innovation_guard.hpp"
+ #include <algorithm>
+ #include <array>
+ #include <cmath>
+@@ -38,6 +39,7 @@
+         }
+ #ifdef BOILED_EGG_EXPERIMENT_COHERENCE_GUARD
+         frequency_.resize(bins_);
++        reliability_.resize(bins_);
+ #endif
+         reset();
+     }
+@@ -45,6 +47,8 @@
+     void reset() noexcept {
+ #ifdef BOILED_EGG_EXPERIMENT_COHERENCE_GUARD
+         coherence_holdoff_=0;
++        std::fill(frequency_.begin(),frequency_.end(),0.0F);
++        std::fill(reliability_.begin(),reliability_.end(),0.0F);
+ #endif
+         std::fill(history_.begin(), history_.end(), 0.0F);
+         std::fill(sorted_history_.begin(), sorted_history_.end(), 0.0F);
+@@ -139,6 +143,8 @@
+             const float residual = wrap(phase[index] - previous_phase[index] - omega[k] * hop);
+             const float frequency = omega[k] + residual / hop;
+ #ifdef BOILED_EGG_EXPERIMENT_COHERENCE_GUARD
++            reliability_[k]=phase_innovation_guard::reliability(
++                frequency,frequency_[k],hop,bins_,initialized);
+             frequency_[k]=frequency;
+ #endif
+             predicted_[k] = initialized ? wrap(rotation_[k] + (synthesis_hop - hop) * frequency) : 0.0F;
+@@ -150,7 +156,10 @@
+ #ifdef BOILED_EGG_EXPERIMENT_COHERENCE_GUARD
+             if (coherence_holdoff_ == 0U &&
+                 std::abs(wrap((frequency_[k]-frequency_[owners[k]])*hop))/hop > std::numbers::pi_v<float>/static_cast<float>(2U*(bins_-1U)))
+-                rotation=predicted_[phase_owner_refinement::select(k,bins_,hop,frequency_.data(),owners)];
++            {
++                const auto target=predicted_[phase_owner_refinement::select(k,bins_,hop,frequency_.data(),owners)];
++                rotation=phase_innovation_guard::blend(rotation,target,reliability_[k]);
++            }
+ #endif
+             if (refractory_[k]) --refractory_[k];
+             // Optional zero-lookahead ablation. Only strongly transient bins
+@@ -219,7 +228,7 @@
+         return static_cast<float>(random_ >> 8U) * (1.0F / 16777216.0F) - 0.5F;
+     }
+ #ifdef BOILED_EGG_EXPERIMENT_COHERENCE_GUARD
+-    std::vector<float> frequency_;
++    std::vector<float> frequency_, reliability_;
+     std::uint32_t coherence_holdoff_{};
+ #endif
+     std::uint32_t bins_, radius_;
+--- a/research/cpp_pv_rt/src/fuzzy_execution.inc
++++ b/research/cpp_pv_rt/src/fuzzy_execution.inc
+@@ -87,6 +87,8 @@
+             const float residual = wrap(phase[index] - previous_phase[index] - omega[k] * hop);
+             const float frequency = omega[k] + residual / hop;
+ #ifdef BOILED_EGG_EXPERIMENT_COHERENCE_GUARD
++            reliability_[k]=phase_innovation_guard::reliability(
++                frequency,frequency_[k],hop,bins_,initialized);
+             frequency_[k]=frequency;
+ #endif
+             predicted_[k] = initialized ? wrap(rotation_[k] + (synthesis_hop - hop) * frequency) : 0.0F;
+@@ -100,7 +102,10 @@
+ #ifdef BOILED_EGG_EXPERIMENT_COHERENCE_GUARD
+             if (coherence_holdoff_ == 0U &&
+                 std::abs(wrap((frequency_[k]-frequency_[owners[k]])*hop))/hop > std::numbers::pi_v<float>/static_cast<float>(2U*(bins_-1U)))
+-                rotation=predicted_[phase_owner_refinement::select(k,bins_,hop,frequency_.data(),owners)];
++            {
++                const auto target=predicted_[phase_owner_refinement::select(k,bins_,hop,frequency_.data(),owners)];
++                rotation=phase_innovation_guard::blend(rotation,target,reliability_[k]);
++            }
+ #endif
+             if (refractory_[k]) --refractory_[k];
+             // Optional zero-lookahead ablation. Only strongly transient bins
