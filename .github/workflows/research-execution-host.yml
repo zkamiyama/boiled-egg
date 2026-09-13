@@ -1,0 +1,115 @@
+name: research-execution-host
+on:
+  push:
+    paths: ['research/**', 'requirements-dev.txt', '.github/workflows/research-execution-host.yml']
+  pull_request:
+    paths: ['research/**', 'requirements-dev.txt', '.github/workflows/research-execution-host.yml']
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  OPENBLAS_NUM_THREADS: 1
+  OMP_NUM_THREADS: 1
+jobs:
+  execution:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Build and exact regression
+        run: |
+          mkdir validation
+          python -m pip install -r requirements-dev.txt
+          cmake -S research/cpp_pv_rt -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=20
+          cmake --build build -j 2
+          ctest --test-dir build --output-on-failure 2>&1 | tee validation/ctest.log
+          export BOILED_EGG_PV_CLI="$PWD/build/boiled_egg_pv_rt_cli"
+          export BOILED_EGG_MULTIRES_CLI="$PWD/build/boiled_egg_multires_rt_cli"
+          python -W error::ResourceWarning -m unittest discover -v -s research -p 'test_*.py' 2>&1 | tee validation/python.log
+          python -W error::ResourceWarning -m unittest -v eval/test_tsm_dataset.py 2>&1 | tee validation/legacy.log
+      - name: Scheduled quality and descriptive callbacks
+        if: matrix.python == '3.13'
+        run: |
+          python research/check_execution_quality.py --build "$PWD/build" --output validation/scheduled-tonal.json
+          build/boiled_egg_execution_bench 1 > validation/callbacks.csv
+          build/boiled_egg_host_bench 1 > validation/automated-host-callbacks.csv
+      - name: Exact source provenance
+        if: always()
+        run: |
+          mkdir -p validation
+          git archive --format=tar.gz --prefix=boiled-egg/ HEAD > validation/source.tar.gz
+          git rev-parse HEAD > validation/COMMIT.txt
+          git rev-parse HEAD^{tree} > validation/TREE.txt
+          git ls-files -z | xargs -0 sha256sum > validation/SOURCE_SHA256SUMS
+          if test -f build/boiled_egg_pv_rt_cli; then
+            sha256sum build/boiled_egg_pv_rt_cli build/boiled_egg_multires_rt_cli > validation/RENDERER_SHA256SUMS
+          fi
+          (cd validation && sha256sum source.tar.gz COMMIT.txt TREE.txt SOURCE_SHA256SUMS > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: research-execution-${{ matrix.python }}-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7
+  formant-hosts:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pinned public host SDKs
+        run: |
+          mkdir -p deps validation
+          git clone --filter=blob:none --no-checkout https://github.com/free-audio/clap.git deps/clap
+          git -C deps/clap checkout 195b42a004144fab0b3cf95e9c067187d15365b7
+          git clone --filter=blob:none --no-checkout https://github.com/steinbergmedia/vst3sdk.git deps/vst3sdk
+          git -C deps/vst3sdk checkout 9fad9770f2ae8542ab1a548a68c1ad1ac690abe0
+          git -C deps/vst3sdk submodule update --init --depth 1 base cmake pluginterfaces public.sdk
+          git -C deps/clap rev-parse HEAD > validation/CLAP_COMMIT.txt
+          git -C deps/vst3sdk rev-parse HEAD > validation/VST3_COMMIT.txt
+          git -C deps/vst3sdk submodule status > validation/VST3_SUBMODULES.txt
+      - name: Real CLAP and VST3 modules, validator and automation tests
+        run: |
+          cmake -S research/host_adapters -B build-host -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCLAP_ROOT="$PWD/deps/clap" -DVST3_ROOT="$PWD/deps/vst3sdk"
+          cmake --build build-host -j 2 2>&1 | tee validation/build-validator.log
+          ctest --test-dir build-host --output-on-failure 2>&1 | tee validation/host-tests.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: research-formant-hosts-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7
+  thread-sanitizer:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Concurrent mailbox and two independent audio owners
+        run: |
+          mkdir validation
+          cmake -S research/cpp_pv_rt -B build-tsan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_CXX_FLAGS='-fsanitize=thread -fno-omit-frame-pointer -fno-pie' \
+            -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=thread -no-pie'
+          cmake --build build-tsan --target boiled_egg_host_threads -j 2
+          TSAN_OPTIONS=halt_on_error=1 build-tsan/boiled_egg_host_threads 2>&1 | tee validation/tsan.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: research-host-tsan-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7
