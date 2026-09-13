@@ -27,6 +27,7 @@ jobs:
           ln -s ../wdl-source/WDL deps/reaper-sdk/WDL
           git -C deps/reaper-sdk rev-parse HEAD > native-evidence/SDK_COMMIT.txt
           git -C deps/wdl-source rev-parse HEAD > native-evidence/WDL_COMMIT.txt
+          cp deps/reaper-sdk/sdk/reaper_plugin.h native-evidence/COMPILED_PUBLIC_SDK_HEADER.txt
           printf 'Official REAPER 7.79, ordinary evaluation only. No license bypass, no binary redistribution.\nhttps://www.reaper.fm/download.php\n' > native-evidence/ORIGIN.txt
       - name: Compile documented host API extension
         run: |
