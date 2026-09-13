@@ -2,7 +2,7 @@ name: research-native-probe
 on:
   workflow_dispatch:
   push:
-    paths: ['.github/workflows/research-native-probe.yml']
+    paths: ['.github/workflows/research-native-probe.yml', 'research/native_reaper_probe.cpp']
 permissions:
   contents: read
 jobs:
