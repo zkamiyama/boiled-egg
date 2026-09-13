@@ -23,9 +23,10 @@ jobs:
           sha256sum deps/reaper.tar.xz > native-evidence/REAPER_DOWNLOAD_SHA256.txt
           tar -xJf deps/reaper.tar.xz -C deps
           git clone --depth 1 https://github.com/justinfrankel/reaper-sdk.git deps/reaper-sdk
-          git clone --depth 1 https://github.com/justinfrankel/WDL.git deps/reaper-sdk/WDL
+          git clone --depth 1 https://github.com/justinfrankel/WDL.git deps/wdl-source
+          ln -s ../wdl-source/WDL deps/reaper-sdk/WDL
           git -C deps/reaper-sdk rev-parse HEAD > native-evidence/SDK_COMMIT.txt
-          git -C deps/reaper-sdk/WDL rev-parse HEAD > native-evidence/WDL_COMMIT.txt
+          git -C deps/wdl-source rev-parse HEAD > native-evidence/WDL_COMMIT.txt
           printf 'Official REAPER 7.79, ordinary evaluation only. No license bypass, no binary redistribution.\nhttps://www.reaper.fm/download.php\n' > native-evidence/ORIGIN.txt
       - name: Compile documented host API extension
         run: |
