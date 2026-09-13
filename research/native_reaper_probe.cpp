@@ -1,7 +1,11 @@
 // Research-only REAPER extension using the documented host pitch API.
 // Build against Cockos' unmodified SDK; no SDK or REAPER binary is redistributed.
 // The ordinary 60-day evaluation may be used only where its terms allow it.
+// The SDK declares an unrelated optional read_wav function pointer. Rename
+// that unused declaration in this translation unit; WAV I/O stays our reader.
+#define read_wav reaper_sdk_unused_read_wav
 #include "reaper_plugin.h"
+#undef read_wav
 #include "wav.hpp"
 #include <algorithm>
 #include <cstdlib>
@@ -19,7 +23,6 @@ IReaperPitchShift* (*create_shift)(int){};
 bool (*enum_mode)(int,const char**){};
 const char* (*enum_sub)(int,int){};
 const char* (*app_version)(){};
-void (*command)(int,int){};
 std::filesystem::path root;
 std::vector<std::string> split(const std::string& s) {
     std::vector<std::string> v; std::stringstream f(s);std::string x;
@@ -81,8 +84,8 @@ void timer() {
         }
         std::ofstream(root/"DONE.txt")<<"native host API completed\n";
     }catch(const std::exception& e){std::ofstream(root/"ERROR.txt")<<e.what()<<'\n';}
-    // Do not bypass evaluation/license dialogs. The runner closes its own process
-    // only after an evidence file is present; normal host lifecycle stays intact.
+    // No evaluation/license-dialog bypass. The runner closes its own process
+    // only after evidence is present; normal host lifecycle stays intact.
 }
 }
 extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(REAPER_PLUGIN_HINSTANCE,reaper_plugin_info_t* rec) {
