@@ -1,10 +1,10 @@
 name: research-native-probe
 on:
   workflow_dispatch:
-  push:
-    paths: ['.github/workflows/research-native-probe.yml', 'research/native_reaper_probe.cpp']
 permissions:
   contents: read
+# Explicitly requested discovery only. Do not repeatedly download/start an
+# external evaluation application on ordinary research commits.
 jobs:
   probe:
     runs-on: ubuntu-24.04
