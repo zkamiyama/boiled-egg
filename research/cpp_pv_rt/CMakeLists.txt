@@ -136,3 +136,5 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(boiled_egg_execution_bench tests/execution_bench.cpp)
     target_link_libraries(boiled_egg_execution_bench PRIVATE boiled_egg_research_multires_rt)
 endif()
+
+include(host.cmake)
