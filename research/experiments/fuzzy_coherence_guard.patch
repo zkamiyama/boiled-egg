@@ -1,0 +1,159 @@
+--- a/research/cpp_pv_rt/src/pv_rt.cpp
++++ b/research/cpp_pv_rt/src/pv_rt.cpp
+@@ -553,7 +553,7 @@
+                 magnitude_.data(), phase_.data(), previous_phase_.data(), owners_.data(),
+                 omega_.data(), channels_, analysis_hop_, synthesis_hop,
+                 static_cast<float>(internal_stretch()), initialized_,
+-                mode_ == BOILEDEGG_RESEARCH_PV_RT_FUZZY, output_phase_.data());
++                mode_ == BOILEDEGG_RESEARCH_PV_RT_FUZZY, output_phase_.data(), flux);
+         }
+         for (std::uint32_t ch = 0; ch < channels_; ++ch) {
+             if (!fuzzy_mode) {
+--- a/research/cpp_pv_rt/src/pv_execution.inc
++++ b/research/cpp_pv_rt/src/pv_execution.inc
+@@ -274,7 +274,7 @@
+             magnitude_.data(), phase_.data(), previous_phase_.data(), owners_.data(),
+             omega_.data(), channels_, analysis_hop_, synthesis_hop,
+             static_cast<float>(internal_stretch()), initialized_,
+-            mode_ == BOILEDEGG_RESEARCH_PV_RT_FUZZY, output_phase_.data());
++            mode_ == BOILEDEGG_RESEARCH_PV_RT_FUZZY, output_phase_.data(), flux);
+             while (fuzzy_.advance_sliced()) co_yield true;
+         }
+         for (std::uint32_t ch = 0; ch < channels_; ++ch) {
+--- a/research/cpp_pv_rt/src/fuzzy_phase.hpp
++++ b/research/cpp_pv_rt/src/fuzzy_phase.hpp
+@@ -35,10 +35,16 @@
+             const float r = static_cast<float>(i) / 1024.0F;
+             noise_lut_[i] = 0.5F * (std::tanh(4.0F * (r - 1.0F)) + 1.0F);
+         }
++#ifdef BOILED_EGG_EXPERIMENT_COHERENCE_GUARD
++        frequency_.resize(bins_);
++#endif
+         reset();
+     }
+ 
+     void reset() noexcept {
++#ifdef BOILED_EGG_EXPERIMENT_COHERENCE_GUARD
++        coherence_holdoff_=0;
++#endif
+         std::fill(history_.begin(), history_.end(), 0.0F);
+         std::fill(sorted_history_.begin(), sorted_history_.end(), 0.0F);
+         std::fill(rotation_.begin(), rotation_.end(), 0.0F);
+@@ -107,7 +113,7 @@
+                  const float* magnitude, const float* phase, const float* previous_phase,
+                  const std::uint32_t* owners, const float* omega,
+                  std::uint32_t channels, std::uint32_t analysis_hop, float synthesis_hop,
+-                 float stretch, bool initialized, bool reset_onsets, float* output) noexcept {
++                 float stretch, bool initialized, bool reset_onsets, float* output, float input_flux=0.0F) noexcept {
+         analyze(linked);
+         if (stretch != last_stretch_) {
+             // (13) is intended mainly for expansion. Keep its asymmetry, but
+@@ -116,6 +122,12 @@
+                 std::min(1.0F, 4.0F * std::abs(stretch - 1.0F));
+             last_stretch_ = stretch;
+         }
++#ifdef BOILED_EGG_EXPERIMENT_COHERENCE_GUARD
++        if (input_flux > 0.12F) coherence_holdoff_=(2U*(bins_-1U)+analysis_hop-1U)/analysis_hop+2U;
++        else if (coherence_holdoff_) --coherence_holdoff_;
++#else
++        (void)input_flux;
++#endif
+         const float hop = static_cast<float>(analysis_hop);
+         for (std::uint32_t k = 0; k < bins_; ++k) {
+             std::uint32_t reference = 0;
+@@ -125,12 +137,22 @@
+             const auto index = static_cast<std::size_t>(reference) * bins_ + k;
+             const float residual = wrap(phase[index] - previous_phase[index] - omega[k] * hop);
+             const float frequency = omega[k] + residual / hop;
++#ifdef BOILED_EGG_EXPERIMENT_COHERENCE_GUARD
++            frequency_[k]=frequency;
++#endif
+             predicted_[k] = initialized ? wrap(rotation_[k] + (synthesis_hop - hop) * frequency) : 0.0F;
+             jitter_[k] = draw(); // fixed work, deterministic across input block partitions
+         }
+         for (std::uint32_t k = 0; k < bins_; ++k) {
+             float rotation = predicted_[owners[k]];
+             const auto member = membership_[k];
++#ifdef BOILED_EGG_EXPERIMENT_COHERENCE_GUARD
++            // Only stable tonal lobes: distinct instantaneous frequencies must
++            // not share one phase rotation merely because magnitudes merge.
++            if (coherence_holdoff_ == 0U &&
++                std::abs(frequency_[k]-frequency_[owners[k]]) > std::numbers::pi_v<float>/static_cast<float>(2U*(bins_-1U)))
++                rotation=predicted_[k];
++#endif
+             if (refractory_[k]) --refractory_[k];
+             // Optional zero-lookahead ablation. Only strongly transient bins
+             // with a >2x local rise are reset. No frame-wide reset or gain boost.
+@@ -197,6 +219,10 @@
+         random_ ^= random_ << 5U;
+         return static_cast<float>(random_ >> 8U) * (1.0F / 16777216.0F) - 0.5F;
+     }
++#ifdef BOILED_EGG_EXPERIMENT_COHERENCE_GUARD
++    std::vector<float> frequency_;
++    std::uint32_t coherence_holdoff_{};
++#endif
+     std::uint32_t bins_, radius_;
+     std::vector<float> history_, sorted_history_, rotation_, predicted_;
+     std::vector<membership> membership_;
+--- a/research/cpp_pv_rt/src/fuzzy_execution.inc
++++ b/research/cpp_pv_rt/src/fuzzy_execution.inc
+@@ -5,20 +5,20 @@
+ const float* magnitude, const float* phase, const float* previous_phase,
+ const std::uint32_t* owners, const float* omega,
+ std::uint32_t channels, std::uint32_t analysis_hop, float synthesis_hop,
+-float stretch, bool initialized, bool reset_onsets, float* output) noexcept {
++float stretch, bool initialized, bool reset_onsets, float* output, float input_flux=0.0F) noexcept {
+     slice_job_={linked,previous_linked,magnitude,phase,previous_phase,owners,omega,
+-        channels,analysis_hop,synthesis_hop,stretch,initialized,reset_onsets,output};
++        channels,analysis_hop,synthesis_hop,stretch,initialized,reset_onsets,output,input_flux};
+ }
+ bool advance_sliced() noexcept { return slice_task_.step(); }
+ private:
+ struct sliced_job { const float *linked, *previous_linked, *magnitude, *phase, *previous_phase;
+     const std::uint32_t* owners; const float* omega;
+     std::uint32_t channels,analysis_hop; float synthesis_hop,stretch;
+-    bool initialized,reset_onsets; float* output; } slice_job_{};
++    bool initialized,reset_onsets; float* output; float input_flux; } slice_job_{};
+ work_sequence slice_task_;
+ work_sequence sliced_sequence() { for (;;) {
+         const auto [linked,previous_linked,magnitude,phase,previous_phase,owners,omega,
+-        channels,analysis_hop,synthesis_hop,stretch,initialized,reset_onsets,output]=slice_job_;
++        channels,analysis_hop,synthesis_hop,stretch,initialized,reset_onsets,output,input_flux]=slice_job_;
+ 
+         if (!populated_) {
+             // Replicate the first frame instead of inventing preceding silence.
+@@ -69,6 +69,12 @@
+             std::min(1.0F, 4.0F * std::abs(stretch - 1.0F));
+             last_stretch_ = stretch;
+         }
++#ifdef BOILED_EGG_EXPERIMENT_COHERENCE_GUARD
++        if (input_flux > 0.12F) coherence_holdoff_=(2U*(bins_-1U)+analysis_hop-1U)/analysis_hop+2U;
++        else if (coherence_holdoff_) --coherence_holdoff_;
++#else
++        (void)input_flux;
++#endif
+         const float hop = static_cast<float>(analysis_hop);
+         for (std::uint32_t k = 0; k < bins_; ++k) {
+             if ((k & 31U) == 0U) co_yield true;
+@@ -80,6 +86,9 @@
+             const auto index = static_cast<std::size_t>(reference) * bins_ + k;
+             const float residual = wrap(phase[index] - previous_phase[index] - omega[k] * hop);
+             const float frequency = omega[k] + residual / hop;
++#ifdef BOILED_EGG_EXPERIMENT_COHERENCE_GUARD
++            frequency_[k]=frequency;
++#endif
+             predicted_[k] = initialized ? wrap(rotation_[k] + (synthesis_hop - hop) * frequency) : 0.0F;
+             jitter_[k] = draw(); // fixed work, deterministic across input block partitions
+         }
+@@ -88,6 +97,11 @@
+ 
+             float rotation = predicted_[owners[k]];
+             const auto member = membership_[k];
++#ifdef BOILED_EGG_EXPERIMENT_COHERENCE_GUARD
++            if (coherence_holdoff_ == 0U &&
++                std::abs(frequency_[k]-frequency_[owners[k]]) > std::numbers::pi_v<float>/static_cast<float>(2U*(bins_-1U)))
++                rotation=predicted_[k];
++#endif
+             if (refractory_[k]) --refractory_[k];
+             // Optional zero-lookahead ablation. Only strongly transient bins
+             // with a >2x local rise are reset. No frame-wide reset or gain boost.
