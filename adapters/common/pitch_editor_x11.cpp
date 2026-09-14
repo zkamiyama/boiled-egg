@@ -105,13 +105,20 @@ void PitchEditor::pump() noexcept {
   else if(e.type==FocusOut&&e.xfocus.mode==NotifyNormal&&
           e.xfocus.detail!=NotifyPointer&&e.xfocus.detail!=NotifyPointerRoot&&e.xfocus.detail!=NotifyInferior)end();
  }
- const auto v=callbacks_.values(callbacks_.user);if(v!=last_)dirty_=true;
+ const auto v=callbacks_.values(callbacks_.user);
+ const auto delay=callbacks_.latency(callbacks_.user);const auto pending=callbacks_.pending(callbacks_.user);
+ const char* error=callbacks_.error(callbacks_.user);
+ // Host reactivation and rejected edits may change status without a parameter
+ // change or X11 expose. Poll this GUI-only metadata along with the controls.
+ if(v!=last_||delay!=last_latency_||pending!=last_pending_||last_error_!=(error?error:""))dirty_=true;
  if(shown_&&dirty_)draw();
 }
 void PitchEditor::draw() noexcept {
  if(!display_)return;const auto v=callbacks_.values(callbacks_.user);last_=v;
+ last_latency_=callbacks_.latency(callbacks_.user);last_pending_=callbacks_.pending(callbacks_.user);
+ const char* status=callbacks_.error(callbacks_.user);last_error_=status?status:"";
  box(0,0,900,640,bg_);box(0,0,900,80,ink_);text(28,36,"boiled egg",panel_,true);text(29,61,"PITCH + FORMANT   /   one shifter",track_);
- text(596,31,"INPUT-CLOCK AUTOMATION",soft_);char label[96];std::snprintf(label,sizeof(label),"Stereo  |  Delay %u samples",callbacks_.latency(callbacks_.user));text(596,58,label,panel_);
+ text(596,31,"INPUT-CLOCK AUTOMATION",soft_);char label[96];std::snprintf(label,sizeof(label),"Stereo  |  Delay %u samples",last_latency_);text(596,58,label,panel_);
  box(22,98,154,496,panel_);text(37,128,"OUTPUT MIX",ink_);text(46,157,"Wet",muted_);text(116,157,"Dry",muted_);
  for(unsigned p:{Wet,Dry}){const int center=p==Wet?64:136;box(center-3,176,6,294,track_);const int y=470-int(v[p]*294);
   box(center-3,y,6,470-y,accent_);box(center-16,y-7,32,14,ink_);text(center-28,511,formatted(p,v[p]),ink_);}
@@ -130,9 +137,8 @@ void PitchEditor::draw() noexcept {
  text(224,537,"PROCESSING  /  manual selection - restart required for changes",muted_);
  for(unsigned p:{Backend,Quality,Policy}){const int x=p==Backend?224:p==Quality?470:637,w=p==Backend?227:p==Quality?148:223;
   box(x,550,w,30,panel_);text(x+10,570,choice(p,int(v[p])),ink_);text(x,601,parameters[p].name,muted_);}
- const char* error=callbacks_.error(callbacks_.user);
- if(error&&*error)text(22,625,error,accent_);
- else if(callbacks_.pending(callbacks_.user))text(22,625,"Pending processing change: host restart / deactivate-reactivate required",accent_);
+ if(!last_error_.empty())text(22,625,last_error_,accent_);
+ else if(last_pending_)text(22,625,"Pending processing change: host restart / deactivate-reactivate required",accent_);
  else text(22,625,v[Backend]==1?"PV PREVIEW  |  +/-12 st  |  10 ms pitch ramp  |  same fixed delay at every pitch":"WSOLA  |  +/-24 st  |  presets and automation keep the original pitch parameter",muted_);
  dirty_=false;XFlush(display_);
 }

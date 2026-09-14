@@ -52,6 +52,8 @@ private:
  unsigned width_{default_width},height_{default_height};
  unsigned long bg_{},panel_{},ink_{},muted_{},track_{},accent_{},soft_{},border_{};
  Values last_=defaults();
+ unsigned last_latency_{};bool last_pending_{};
+ std::string last_error_;
  int active_{-1},focus_{Pitch};bool editing_{},dirty_{true},shown_{},host_keyboard_{};
  std::string edit_text_;
 };
