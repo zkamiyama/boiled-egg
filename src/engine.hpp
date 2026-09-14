@@ -18,6 +18,7 @@ public:
     void init(uint32_t channels, uint32_t capacity) {
         channels_ = channels;
         capacity_ = std::max<uint32_t>(capacity, 8u);
+        mask_ = (capacity_ & (capacity_ - 1u)) == 0u ? capacity_ - 1u : 0u;
         data_.assign(static_cast<size_t>(channels_) * capacity_, 0.0f);
         reset();
     }
@@ -38,14 +39,25 @@ public:
         if (absolute_index < 0) return 0.0f;
         const auto idx = static_cast<uint64_t>(absolute_index);
         if (idx < start_ || idx >= end_ || ch >= channels_) return 0.0f;
-        return data_[static_cast<size_t>(ch) * capacity_ + (idx % capacity_)];
+        return data_[static_cast<size_t>(ch) * capacity_ + slot_index(idx)];
+    }
+
+    // Borrow a complete non-wrapping readable span; boundary/zero-padding
+    // cases deliberately fall back to get(). No unchecked storage access.
+    const float* contiguous(uint32_t ch, int64_t absolute_index, uint32_t frames) const noexcept {
+        if (absolute_index < 0 || ch >= channels_) return nullptr;
+        const auto index = static_cast<uint64_t>(absolute_index);
+        if (index < start_ || index > end_ || frames > end_ - index) return nullptr;
+        const auto slot = slot_index(index);
+        if (frames > capacity_ - slot) return nullptr;
+        return data_.data() + static_cast<size_t>(ch) * capacity_ + slot;
     }
 
     bool push_planar(const float* const* src, uint32_t frames) noexcept {
         if (frames > free_space()) return false;
         for (uint32_t i = 0; i < frames; ++i) {
             const uint64_t pos = end_ + i;
-            const size_t slot = static_cast<size_t>(pos % capacity_);
+            const size_t slot = slot_index(pos);
             for (uint32_t ch = 0; ch < channels_; ++ch) {
                 data_[static_cast<size_t>(ch) * capacity_ + slot] = src[ch][i];
             }
@@ -58,7 +70,7 @@ public:
         if (frames > free_space()) return false;
         for (uint32_t i = 0; i < frames; ++i) {
             const uint64_t pos = end_ + i;
-            const size_t slot = static_cast<size_t>(pos % capacity_);
+            const size_t slot = slot_index(pos);
             for (uint32_t ch = 0; ch < channels_; ++ch) {
                 data_[static_cast<size_t>(ch) * capacity_ + slot] =
                     src_planar_contiguous[static_cast<size_t>(ch) * frames + i];
@@ -70,7 +82,7 @@ public:
 
     bool push_one(const float* frame) noexcept {
         if (free_space() == 0) return false;
-        const size_t slot = static_cast<size_t>(end_ % capacity_);
+        const size_t slot = slot_index(end_);
         for (uint32_t ch = 0; ch < channels_; ++ch) {
             data_[static_cast<size_t>(ch) * capacity_ + slot] = frame[ch];
         }
@@ -81,7 +93,7 @@ public:
     uint32_t pop_planar(float* const* dst, uint32_t frames) noexcept {
         const uint32_t n = std::min(frames, size());
         for (uint32_t i = 0; i < n; ++i) {
-            const size_t slot = static_cast<size_t>((start_ + i) % capacity_);
+            const size_t slot = slot_index(start_ + i);
             for (uint32_t ch = 0; ch < channels_; ++ch) {
                 dst[ch][i] = data_[static_cast<size_t>(ch) * capacity_ + slot];
             }
@@ -96,6 +108,12 @@ public:
     }
 
 private:
+    // Preserve arbitrary-capacity behavior; only exact powers of two use the
+    // mask. No capacity rounding, extra storage or floating-point change.
+    size_t slot_index(uint64_t absolute_index) const noexcept {
+        return static_cast<size_t>(mask_ ? (absolute_index & mask_) : (absolute_index % capacity_));
+    }
+    uint32_t mask_ = 0;
     uint32_t channels_ = 0;
     uint32_t capacity_ = 0;
     uint64_t start_ = 0;
@@ -104,6 +122,7 @@ private:
 };
 
 class Engine {
+    friend struct EngineCorrelationTest; // Internal numerical regression, not an installed API.
 public:
     explicit Engine(const boiledegg_config& config);
 
@@ -147,6 +166,11 @@ private:
 
     std::vector<float> prev_tail_;     // channels * overlap
     std::vector<float> emit_scratch_;  // channels * hop
+    // Construction-only scratch. Cached channel means retain the original
+    // double arithmetic and candidate/stride accumulation order.
+    std::vector<double> correlation_tail_, correlation_input_;
+    double correlation_tail_energy_ = 1e-12;
+    int64_t correlation_start_ = 0;
     std::vector<float> sample_scratch_;// channels
     std::vector<float> zero_scratch_;  // channels * max_block
     std::vector<const float*> zero_ptrs_;
