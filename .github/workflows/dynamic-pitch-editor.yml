@@ -76,11 +76,16 @@ jobs:
           tar --exclude=.git -czf validation/pinned-host-sources.tar.gz -C deps clap vst3sdk
       - name: Build actual plugin modules and validator
         run: |
-          cmake -S . -B build-host -G Ninja -DCMAKE_BUILD_TYPE=Release \
+          cmake -S . -B build-host -G Ninja -DCMAKE_BUILD_TYPE=Release -DBOILED_EGG_BUILD_SHARED=OFF \
             -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON -DBOILED_EGG_BUILD_CLAP=ON -DBOILED_EGG_BUILD_VST3=ON \
             -DFETCHCONTENT_SOURCE_DIR_CLAP_HEADERS="$PWD/deps/clap" -DFETCHCONTENT_SOURCE_DIR_VST3SDK="$PWD/deps/vst3sdk"
           cmake --build build-host -j2 2>&1 | tee validation/build-validator.log
           ctest --test-dir build-host --output-on-failure 2>&1 | tee validation/loaded-tests.log
+          readelf -d build-host/adapters/clap/boiled_egg.clap > validation/clap-dependencies.log
+          readelf -d 'build-host/VST3/Release/boiled egg.vst3/Contents/x86_64-linux/boiled egg.so' > validation/vst3-dependencies.log
+          if grep -q libboiled_egg validation/clap-dependencies.log validation/vst3-dependencies.log; then
+            echo 'Plugin unexpectedly requires a separate SDK library' >&2; exit 1
+          fi
           cp build-host/adapters/clap/boiled_egg.clap validation/
           tar -czf validation/boiled-egg-vst3.tar.gz -C build-host/VST3/Release 'boiled egg.vst3'
       - uses: actions/upload-artifact@v4
