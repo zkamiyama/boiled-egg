@@ -28,7 +28,7 @@ jobs:
       - name: Build and test dynamic public SDK
         run: |
           mkdir validation
-          python -m pip install numpy scipy
+          python -m pip install numpy scipy soundfile
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON
           cmake --build build -j2
           ctest --test-dir build --output-on-failure | tee validation/ctest.log
