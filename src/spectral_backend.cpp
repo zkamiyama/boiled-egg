@@ -31,10 +31,18 @@ SpectralBackend::SpectralBackend(const boiledegg_config& c,const boiledegg_backe
     boiledegg_research_pv_rt_result result{};
     handle_=boiledegg_research_pv_rt_create_exec(&pv,&f,&execution,&result);
     if (!handle_) throw BackendConstructionError{translate(result)};
+    if(b.flags&BOILEDEGG_BACKEND_CONTINUOUS_PITCH) {
+        const auto enabled=boiledegg_private_pv_enable_timeline(handle_);
+        if(enabled!=BOILEDEGG_RESEARCH_PV_RT_OK) {
+            boiledegg_research_pv_rt_destroy(handle_);handle_=nullptr;
+            throw BackendConstructionError{translate(enabled)};
+        }
+    }
     const uint32_t scale=c.sample_rate>48000?2u:1u;
     fft_=pv.fft_size*scale;hop_=pv.analysis_hop*scale;
     latency_=boiled_egg::research::detail::compact_host_latency(scale,
-        b.quality_mode==BOILEDEGG_QUALITY_GENERAL?0u:1u,b.initial_pitch_ratio);
+        b.quality_mode==BOILEDEGG_QUALITY_GENERAL?0u:1u,
+        (b.flags&BOILEDEGG_BACKEND_CONTINUOUS_PITCH)?.5f:b.initial_pitch_ratio);
 }
 SpectralBackend::~SpectralBackend(){boiledegg_research_pv_rt_destroy(handle_);}
 boiledegg_result SpectralBackend::reset() noexcept {
@@ -45,6 +53,10 @@ boiledegg_result SpectralBackend::set_time_ratio(float v) noexcept {
     return v==backend_.initial_time_ratio?BOILEDEGG_OK:BOILEDEGG_UNSUPPORTED_MODE;
 }
 boiledegg_result SpectralBackend::set_pitch_ratio(float v) noexcept {
+    if(backend_.flags&BOILEDEGG_BACKEND_CONTINUOUS_PITCH) {
+        if(flushed_)return BOILEDEGG_OK; // public target survives to reset
+        return translate(boiledegg_research_pv_rt_set_pitch_ratio(handle_,v));
+    }
     return v==backend_.initial_pitch_ratio?BOILEDEGG_OK:BOILEDEGG_UNSUPPORTED_MODE;
 }
 boiledegg_result SpectralBackend::set_formant_ratio(float v) noexcept {

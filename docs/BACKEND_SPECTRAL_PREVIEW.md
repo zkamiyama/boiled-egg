@@ -1,5 +1,10 @@
 # Explicit backends and the formant preview
 
+> This document describes the original static-pitch preview. For the additional
+> explicit continuous-pitch flag and existing-plugin editor/state integration,
+> see [DYNAMIC_PITCH_EDITOR.md](DYNAMIC_PITCH_EDITOR.md). Without that flag,
+> the static-control contract below is retained.
+
 ## Status and compatibility
 
 The stable/default backend remains WSOLA. Its existing General, Transient and

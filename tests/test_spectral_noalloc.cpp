@@ -16,13 +16,14 @@ void operator delete(void* p,std::align_val_t)noexcept{std::free(p);}void operat
 void operator delete(void* p,std::size_t,std::align_val_t)noexcept{std::free(p);}void operator delete[](void* p,std::size_t,std::align_val_t)noexcept{std::free(p);}
 int main(){
     float l[64]{},r[64]{},ol[8192]{},orr[8192]{};const float* in[]={l,r};float* out[]={ol,orr};
-    for(unsigned quality:{0u,1u})for(unsigned policy:{1u,2u})for(unsigned io:{1u,2u}){
+    for(unsigned quality:{0u,1u})for(unsigned policy:{1u,2u})for(unsigned io:{1u,2u})for(unsigned continuous:{0u,1u}){
         auto c=boiledegg_default_config(96000,2);c.max_block_size=64;auto b=boiledegg_default_backend_config();
-        b.backend_id=1;b.flags=1;b.quality_mode=quality;b.formant_policy=policy;b.io_contract=io;b.initial_pitch_ratio=.5f;
+        b.backend_id=1;b.flags=1|(continuous?BOILEDEGG_BACKEND_CONTINUOUS_PITCH:0u);b.quality_mode=quality;b.formant_policy=policy;b.io_contract=io;b.initial_pitch_ratio=.5f;
         boiledegg_result result{};auto* h=boiledegg_create_backend(&c,&b,&result);if(!h||result)return 1;
         auto before=allocations.load();
         for(unsigned i=0;i<500;++i){for(unsigned k=0;k<64;++k){l[k]=.1f*std::sin(.027f*float(i*64+k));r[k]=-.5f*l[k];}
             if(boiledegg_set_formant_ratio(h,i%2?.75f:1.25f))return 2;
+            if(continuous && boiledegg_set_pitch_ratio(h,i%2?.5f:2.f))return 11;
             if(io==2){boiledegg_parameter_event ev{sizeof(ev),17,BOILEDEGG_PARAMETER_FORMANT_RATIO,i%2?.5f:2.f};
                 if(boiledegg_process_realtime(h,in,out,64,&ev,1))return 3;
             } else {uint32_t used=0;if(boiledegg_push(h,in,64,&used)||used!=64)return 4;
@@ -35,5 +36,5 @@ int main(){
         if(boiledegg_reset(h)||allocations.load()!=before)return 10;
         boiledegg_destroy(h);
     }
-    std::puts("eight spectral profile/policy/IO combinations: processing, state, events, flush and reset allocate zero");return 0;
+    std::puts("sixteen static/dynamic spectral profile/policy/IO combinations: processing, state, events, flush and reset allocate zero");return 0;
 }

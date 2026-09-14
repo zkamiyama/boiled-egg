@@ -1,0 +1,59 @@
+name: dynamic-plugin-sanitizers
+on:
+  push:
+    paths: ['src/**', 'include/**', 'tests/**', 'adapters/**', 'cmake/**', 'CMakeLists.txt', '.github/workflows/dynamic-plugin-sanitizers.yml']
+  pull_request:
+    paths: ['src/**', 'include/**', 'tests/**', 'adapters/**', 'cmake/**', 'CMakeLists.txt', '.github/workflows/dynamic-plugin-sanitizers.yml']
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+defaults:
+  run:
+    shell: bash
+jobs:
+  plugin-sanitizers:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address, thread]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pinned CLAP headers
+        run: |
+          mkdir -p deps validation
+          git clone --filter=blob:none --no-checkout https://github.com/free-audio/clap.git deps/clap
+          git -C deps/clap checkout 195b42a004144fab0b3cf95e9c067187d15365b7
+      - name: Build the actual shared plugin processor with instrumentation
+        env:
+          SANITIZER: ${{ matrix.sanitizer }}
+        run: |
+          if test "$SANITIZER" = address; then
+            EXTRA=(-DBOILED_EGG_SANITIZE=ON)
+          else
+            EXTRA=(-DBOILED_EGG_THREAD_SANITIZE=ON)
+          fi
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON -DBOILED_EGG_BUILD_CLAP=ON \
+            -DBOILED_EGG_PLUGIN_UI=OFF -DBOILED_EGG_BUILD_TOOLS=OFF -DBOILED_EGG_BUILD_BENCH=OFF \
+            -DFETCHCONTENT_SOURCE_DIR_CLAP_HEADERS="$PWD/deps/clap" "${EXTRA[@]}"
+          cmake --build build --target boiled_egg_plugin_controls_test boiled_egg_plugin_threads_test boiled_egg_spectral_threads_test -j2
+      - name: Real processor, parallel owners and coupled mailbox/state publications
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1
+          TSAN_OPTIONS: halt_on_error=1
+        run: |
+          ctest --test-dir build --output-on-failure -R 'boiled_egg_(plugin_controls|plugin_threads|spectral_threads_test)$' 2>&1 | tee validation/sanitizers.log
+          git rev-parse HEAD > validation/COMMIT.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dynamic-plugin-${{ matrix.sanitizer }}-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7

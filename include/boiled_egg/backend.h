@@ -27,6 +27,11 @@ typedef enum boiledegg_backend_status {
     BOILEDEGG_BACKEND_EXPERIMENTAL = 2
 } boiledegg_backend_status;
 #define BOILEDEGG_BACKEND_ALLOW_EXPERIMENTAL (1u << 0)
+/* Opt-in PV input-clock timeline. Pitch targets may change in [.5,2], additionally
+ * time*pitch<=2. Time remains fixed. A 10ms input-domain ratio ramp precedes the
+ * shared frame/resampler map. Fixed-I/O latency covers the ENTIRE pitch range,
+ * not just the initial ratio. No change to legacy or unflagged preview handles. */
+#define BOILEDEGG_BACKEND_CONTINUOUS_PITCH (1u << 1)
 /* Backend feature flags: distinct from boiledegg_runtime_info capabilities. */
 #define BOILEDEGG_BACKEND_STREAMING          (1u << 0)
 #define BOILEDEGG_BACKEND_REALTIME           (1u << 1)

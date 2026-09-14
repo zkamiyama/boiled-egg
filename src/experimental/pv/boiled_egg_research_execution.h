@@ -27,6 +27,8 @@ typedef struct boiledegg_research_execution_stats {
 } boiledegg_research_execution_stats;
 boiledegg_research_execution boiledegg_research_default_execution(void);
 uint32_t boiledegg_research_simd_available(void);
+/* Product-private construction-time opt-in. Not installed or exported. */
+boiledegg_research_pv_rt_result boiledegg_private_pv_enable_timeline(boiledegg_research_pv_rt_handle*);
 boiledegg_research_pv_rt_handle* boiledegg_research_pv_rt_create_exec(
     const boiledegg_research_pv_rt_config*, const boiledegg_research_features*,
     const boiledegg_research_execution*, boiledegg_research_pv_rt_result*);

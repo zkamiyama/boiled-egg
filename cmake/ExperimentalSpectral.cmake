@@ -6,7 +6,7 @@ if(BOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL)
   target_compile_definitions(boiled_egg PRIVATE BOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=1)
 endif()
 if(BOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL AND BOILED_EGG_BUILD_TESTS)
-  # Independent unmodified research API oracle, hidden from the installed ABI.
+  # Direct same-kernel API reference, hidden from the installed ABI; not an independent acoustic oracle.
   add_library(boiled_egg_pv_oracle STATIC src/experimental/pv/pv_rt.cpp src/experimental/pv/fft.cpp)
   target_include_directories(boiled_egg_pv_oracle PUBLIC src/experimental/pv)
   target_compile_features(boiled_egg_pv_oracle PUBLIC cxx_std_20)
@@ -33,4 +33,14 @@ if(BOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL AND BOILED_EGG_BUILD_TESTS AND BOILED
   add_executable(boiled_egg_pv_oracle_cli tests/pv_oracle_cli.cpp tools/wav_io.cpp)
   target_include_directories(boiled_egg_pv_oracle_cli PRIVATE tools)
   target_link_libraries(boiled_egg_pv_oracle_cli PRIVATE boiled_egg_pv_oracle)
+endif()
+
+if(BOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL AND BOILED_EGG_BUILD_TESTS)
+  add_executable(boiled_egg_dynamic_pitch_test tests/test_dynamic_pitch.cpp)
+  target_link_libraries(boiled_egg_dynamic_pitch_test PRIVATE boiled_egg::boiled_egg)
+  add_test(NAME boiled_egg_dynamic_pitch_test COMMAND boiled_egg_dynamic_pitch_test)
+endif()
+if(BOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL AND BOILED_EGG_BUILD_BENCH AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(boiled_egg_dynamic_pitch_bench quality/dynamic_pitch/bench.cpp)
+  target_link_libraries(boiled_egg_dynamic_pitch_bench PRIVATE boiled_egg::boiled_egg)
 endif()
