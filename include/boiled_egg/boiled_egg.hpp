@@ -30,6 +30,12 @@ struct parameter_event : boiledegg_parameter_event {
         return parameter_event{sizeof(boiledegg_parameter_event), sample_offset,
                                BOILEDEGG_PARAMETER_PITCH_SEMITONES, semitones};
     }
+    static parameter_event formant_ratio(uint32_t offset,float v) noexcept {
+        return parameter_event{sizeof(boiledegg_parameter_event),offset,BOILEDEGG_PARAMETER_FORMANT_RATIO,v};
+    }
+    static parameter_event formant_semitones(uint32_t offset,float v) noexcept {
+        return parameter_event{sizeof(boiledegg_parameter_event),offset,BOILEDEGG_PARAMETER_FORMANT_SEMITONES,v};
+    }
 };
 
 inline boiledegg_profile_config profile(
@@ -88,6 +94,16 @@ public:
         return *this;
     }
 
+    void set_formant_ratio(float v) { check(boiledegg_set_formant_ratio(handle_,v)); }
+    void set_formant_semitones(float v) { check(boiledegg_set_formant_semitones(handle_,v)); }
+    float formant_ratio() const noexcept { return boiledegg_get_formant_ratio(handle_); }
+    boiledegg_backend_parameter_state backend_parameter_state() const {
+        boiledegg_backend_parameter_state value{};value.struct_size=sizeof(value);
+        check(boiledegg_get_backend_parameter_state(handle_,&value));return value;
+    }
+    void set_backend_parameter_state(const boiledegg_backend_parameter_state& value) {
+        check(boiledegg_set_backend_parameter_state(handle_,&value));
+    }
     void reset() { check(boiledegg_reset(handle_)); }
     void set_time_ratio(float ratio) { check(boiledegg_set_time_ratio(handle_, ratio)); }
     void set_pitch_ratio(float ratio) { check(boiledegg_set_pitch_ratio(handle_, ratio)); }

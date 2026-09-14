@@ -50,6 +50,25 @@ typedef struct boiledegg_backend_info {
     uint32_t reserved[3];
 } boiledegg_backend_info;
 
+#define BOILEDEGG_PARAMETER_FORMANT_RATIO 4u
+#define BOILEDEGG_PARAMETER_FORMANT_SEMITONES 5u
+/* State for this extension. Identity must match the live handle; restoring does
+ * not silently switch backends/policies. Legacy state remains time/pitch only
+ * and never overwrites the formant target. Snapshots are per-field atomic, not
+ * a transaction with concurrently changing UI parameters. */
+typedef struct boiledegg_backend_parameter_state {
+    uint32_t struct_size, version, backend_id, formant_policy;
+    float time_ratio, pitch_ratio, formant_ratio;
+    uint32_t reserved;
+} boiledegg_backend_parameter_state;
+BOILEDEGG_API boiledegg_result boiledegg_set_formant_ratio(boiledegg_handle*,float ratio);
+BOILEDEGG_API boiledegg_result boiledegg_set_formant_semitones(boiledegg_handle*,float semitones);
+BOILEDEGG_API float boiledegg_get_formant_ratio(const boiledegg_handle*);
+BOILEDEGG_API boiledegg_result boiledegg_get_backend_parameter_state(
+    const boiledegg_handle*,boiledegg_backend_parameter_state*);
+BOILEDEGG_API boiledegg_result boiledegg_set_backend_parameter_state(
+    boiledegg_handle*,const boiledegg_backend_parameter_state*);
+
 BOILEDEGG_API boiledegg_backend_config boiledegg_default_backend_config(void);
 /* Allocation-free build-level inventory. Known but uncompiled backends return
  * OK with status UNAVAILABLE and zero feature/range masks. This is not a quality
