@@ -28,12 +28,14 @@ class Kernel:
         self.lib.phase_heap_destroy.argtypes=[c.c_void_p]
         self.lib.phase_heap_process.argtypes=[c.c_void_p]+[ptr]*7+[c.c_double]*3+[ptr]
         self.lib.phase_heap_process.restype=c.c_uint
-        self.ptr=ptr;self.h=self.lib.phase_heap_create(bins)
+        self.bins=bins;self.ptr=ptr;self.h=self.lib.phase_heap_create(bins)
         if not self.h:raise ValueError('kernel construction')
     def close(self):
         if self.h:self.lib.phase_heap_destroy(self.h);self.h=None
     def process(self,mag,oldmag,dt,olddt,df,oldphase,phase,hs,alpha):
         arrays=[np.ascontiguousarray(a,dtype=np.float64) for a in (mag,oldmag,dt,olddt,df,oldphase,phase)]
+        if any(a.shape!=(self.bins,) or not np.isfinite(a).all() for a in arrays):raise ValueError("finite kernel arrays of declared bin count required")
+        if np.any(arrays[0]<0) or np.any(arrays[1]<0) or not np.isfinite(hs) or hs<0 or not .25<=alpha<=4:raise ValueError("invalid kernel magnitude/hop/stretch")
         out=np.empty_like(arrays[0])
         n=self.lib.phase_heap_process(self.h,*[a.ctypes.data_as(self.ptr) for a in arrays],hs,alpha,1e-6,out.ctypes.data_as(self.ptr))
         return wrap(out),n
@@ -54,7 +56,7 @@ def render(x,rate,time=1.,pitch=1.,mode='heap',kernel_path=None,window=2048):
     coeff=np.array([np.fft.rfft(np.fft.ifftshift(padded[t:t+N]*w[:,None],axes=0),axis=0) for t in centers])
     ref=int(np.argmax(np.sum(x*x,axis=0)));phase=np.angle(coeff[:,:,ref]);mag=np.sqrt(np.mean(np.abs(coeff)**2,axis=2))
     dt,df,back=derivatives(phase,hop,N);synth=np.floor(centers*alpha+.5).astype(int)
-    middle=int(np.floor(len(x)*alpha+.5));y=np.zeros((middle+3*N,x.shape[1]));weight=np.zeros(len(y));prev=phase[0];vertical=0
+    middle=max(1,int(np.floor(len(x)*alpha+.5)));y=np.zeros((middle+3*N,x.shape[1]));weight=np.zeros(len(y));prev=phase[0];vertical=0
     kernel=Kernel(kernel_path,mag.shape[1]) if mode=='heap' else None
     try:
         for i,t in enumerate(synth):
