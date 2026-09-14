@@ -35,7 +35,7 @@ bool PitchEditor::load_fonts() noexcept {
 }
 void PitchEditor::detach() noexcept {if(!display_)return;end();if(gc_)XFreeGC(display_,gc_);if(font_)XFreeFont(display_,font_);if(heading_)XFreeFont(display_,heading_);
  if(window_)XDestroyWindow(display_,window_);XCloseDisplay(display_);display_=nullptr;window_=0;gc_=nullptr;font_=heading_=nullptr;shown_=false;}
-void PitchEditor::show(bool on) noexcept {if(!display_)return;shown_=on;if(on)XMapWindow(display_,window_);else XUnmapWindow(display_,window_);dirty_=true;XFlush(display_);}
+void PitchEditor::show(bool on) noexcept {if(!display_)return;if(!on)end();shown_=on;if(on)XMapWindow(display_,window_);else XUnmapWindow(display_,window_);dirty_=true;XFlush(display_);}
 bool PitchEditor::resize(unsigned w,unsigned h) noexcept {if(w<760||h<560||w>1800||h>1280)return false;width_=w;height_=h;if(display_){XResizeWindow(display_,window_,w,h);(void)load_fonts();}dirty_=true;return true;}
 void PitchEditor::box(int x,int y,int w,int h,unsigned long c) noexcept {XSetForeground(display_,gc_,c);XFillRectangle(display_,window_,gc_,sx(x),sy(y),unsigned(sx(w)),unsigned(sy(h)));}
 void PitchEditor::line(int x1,int y1,int x2,int y2,unsigned long c) noexcept {XSetForeground(display_,gc_,c);XDrawLine(display_,window_,gc_,sx(x1),sy(y1),sx(x2),sy(y2));}
@@ -65,7 +65,7 @@ void PitchEditor::mouse(int x,int y,int button,bool motion) noexcept {
  for(unsigned p:{Backend,Quality,Policy}){const int left=p==Backend?224:p==Quality?470:637,right=p==Backend?451:p==Quality?618:860;
   if(x>=left&&x<right&&y>=550&&y<580){const int choices=p==Backend?2:3;for(int step=1;step<=choices;++step){auto next=v;next[p]=float((int(v[p])+step)%choices);if(valid_values(next)){if(begin(p)){value(p,next[p]);end();}break;}}return;}}
  if(y<140||y>512)return;
- for(unsigned p:{Wet,Dry}){const int left=p==Wet?36:107;if(x>=left&&x<left+57){if(begin(p)){value(p,std::clamp((470.f-y)/294.f,0.f,1.f));if(button!=1)end();}return;}}
+ for(unsigned p:{Wet,Dry}){const int left=p==Wet?36:107;if(x>=left&&x<left+57){if(begin(p)){value(p,button==1?std::clamp((470.f-y)/294.f,0.f,1.f):v[p]+(button==4?.01f:-.01f));if(button!=1)end();}return;}}
  for(unsigned r=0;r<rows.size();++r){const auto p=rows[r];if(y<ys[r]-18||y>ys[r]+21||x<220)continue;
   if(!begin(p))return;
   if(x>=748&&x<847&&button==1){editing_=true;edit_text_=formatted(p,v[p]);if(!host_keyboard_)XSetInputFocus(display_,window_,RevertToParent,CurrentTime);dirty_=true;return;}
@@ -88,7 +88,7 @@ bool PitchEditor::key_input(unsigned long symbol,char ascii,bool shift,bool cont
  }
  if(symbol==XK_Tab){focus_=(focus_+int(Backend)+(shift?-1:1))%int(Backend);dirty_=true;return true;}
  if(symbol==XK_Left||symbol==XK_Down||symbol==XK_Right||symbol==XK_Up||symbol==XK_Home){const unsigned p=unsigned(focus_);const auto v=callbacks_.values(callbacks_.user);
-  float unit=p==Fine||p==FormantFine?1.f:p==Wet||p==Dry||p==Pan?.01f:.1f;if(shift)unit*=.1f;
+  float unit=parameters[p].stepped?1.f:p==Fine||p==FormantFine?1.f:p==Wet||p==Dry||p==Pan?.01f:.1f;if(shift&&!parameters[p].stepped)unit*=.1f;
   if(begin(p)){value(p,symbol==XK_Home?parameters[p].initial:v[p]+((symbol==XK_Left||symbol==XK_Down)?-unit:unit));end();return true;}}
  return false;
 }
@@ -100,6 +100,10 @@ void PitchEditor::pump() noexcept {
   else if(e.type==MotionNotify)mouse(int(e.xmotion.x*default_width/width_),int(e.xmotion.y*default_height/height_),1,true);
   else if(e.type==ButtonRelease&&!editing_)end();
   else if(e.type==KeyPress&&!host_keyboard_)key(e.xkey);
+  // Acquiring explicit keyboard focus can first emit NotifyPointer for the
+  // implicit pointer focus. It is not loss of the editor's new focus.
+  else if(e.type==FocusOut&&e.xfocus.mode==NotifyNormal&&
+          e.xfocus.detail!=NotifyPointer&&e.xfocus.detail!=NotifyPointerRoot&&e.xfocus.detail!=NotifyInferior)end();
  }
  const auto v=callbacks_.values(callbacks_.user);if(v!=last_)dirty_=true;
  if(shown_&&dirty_)draw();
