@@ -119,6 +119,10 @@ if(BOILED_EGG_BUILD_TESTS)
   add_test(NAME boiled_egg_profile_test COMMAND boiled_egg_profile_test)
 endif()
 
+if(BOILED_EGG_BUILD_CLAP OR BOILED_EGG_BUILD_VST3)
+  add_subdirectory(adapters/common)
+endif()
+
 if(BOILED_EGG_BUILD_CLAP)
   add_subdirectory(adapters/clap)
 endif()
