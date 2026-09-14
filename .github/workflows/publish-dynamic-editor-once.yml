@@ -1,4 +1,4 @@
-# Temporary hash-bound transfer of locally built/tested source, removed below.
+# Temporary hash-bound source transfer. No workflow mutation by GITHUB_TOKEN.
 name: publish-dynamic-editor-once
 on:
   push:
@@ -17,11 +17,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
-      - name: Reconstruct only hash-verified source from repository blobs
+      - name: Reconstruct only hash-verified ordinary source from repository blobs
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          test "$(git rev-parse HEAD^)" = 86477781b01f80336a15c880e30b96df90cc1d9f
+          test "$(git rev-parse HEAD^)" = bc9f09f79ece3e65e44c01bede3d8f37e2051cd3
           mkdir publication-validation
           python - <<'PY'
           import base64,hashlib,json,lzma,pathlib,subprocess
@@ -36,10 +36,13 @@ jobs:
             raw=lzma.decompress(packed)
             assert hashlib.sha256(raw).hexdigest()==wanted, 'source transfer hash mismatch'
             group=json.loads(raw)
+            # Workflow creation/removal belongs to the separately authorized
+            # connector, not this source-only contents token.
+            group['files'].pop('.github/workflows/dynamic-pitch-editor.yml',None)
             for name,entry in group['files'].items():
               p=pathlib.Path(name)
               assert not p.is_absolute() and '..' not in p.parts and not p.is_symlink()
-              assert name=='CMakeLists.txt' or name.startswith(('adapters/','cmake/','quality/dynamic_pitch/')) or name=='.github/workflows/dynamic-pitch-editor.yml'
+              assert name=='CMakeLists.txt' or name.startswith(('adapters/','cmake/','quality/dynamic_pitch/'))
               current=hashlib.sha256(p.read_bytes()).hexdigest() if p.exists() else None
               assert current==entry['before_sha256'], 'unexpected source at '+name
             for name,entry in group['files'].items():
@@ -54,10 +57,8 @@ jobs:
             -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON -DCMAKE_CXX_STANDARD=20
           cmake --build build-publication -j2
           ctest --test-dir build-publication --output-on-failure | tee publication-validation/ctest.log
-      - name: Remove temporary write workflow and publish to this branch only
+      - name: Publish ordinary source to this branch only
         run: |
-          git rm .github/workflows/publish-dynamic-editor-once.yml
-          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'Remove one-time source publication workflow'
           git rev-parse HEAD > publication-validation/COMMIT.txt
           git rev-parse HEAD^{tree} > publication-validation/TREE.txt
           git ls-files -z | xargs -0 sha256sum > publication-validation/SOURCE_SHA256SUMS
