@@ -42,7 +42,7 @@ boiledegg_result validate_ramps(const boiledegg_ramp_event* events,std::uint32_t
             const auto& e=events[i++];
             const float v=e.parameter_id==BOILEDEGG_PARAMETER_PITCH_SEMITONES?std::pow(2.f,e.value/12.f):e.value;
             auto& ramp=e.parameter_id==BOILEDEGG_PARAMETER_TIME_RATIO?p.time:p.pitch;
-            ramp.start(v,e.duration_frames,e.curve);
+            ramp.start(v,e.duration_frames,e.curve,true);
         }while(i<count&&events[i].sample_offset==offset);
         if(!safe(p))return BOILEDEGG_UNSUPPORTED_MODE;
     }

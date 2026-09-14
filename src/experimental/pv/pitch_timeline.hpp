@@ -18,7 +18,7 @@ public:
     }
     [[nodiscard]] bool enabled() const noexcept {return !nodes_.empty();}
     void reset(float pitch,float formant) noexcept {
-        written_=0;position_=output_=0;plan_.pitch.reset(pitch);
+        written_=0;position_=output_=0;position_error_=output_error_=0;precise_clock_=false;plan_.pitch.reset(pitch);
         plan_.time.reset(plan_.time.target);
         if(enabled())nodes_[0]={0,pitch,formant,0};
     }
@@ -26,8 +26,8 @@ public:
         if(plan_.pitch.target==pitch)return;
         plan_.pitch.start(pitch,written_?ramp_frames_:0U,0);
     }
-    void ramp(float value,std::uint32_t frames,std::uint32_t curve) noexcept {plan_.pitch.start(value,frames,curve);}
-    void time_ramp(float value,std::uint32_t frames,std::uint32_t curve) noexcept {plan_.time.start(value,frames,curve);}
+    void ramp(float value,std::uint32_t frames,std::uint32_t curve) noexcept {plan_.pitch.start(value,frames,curve,true);precise_clock_=true;}
+    void time_ramp(float value,std::uint32_t frames,std::uint32_t curve) noexcept {plan_.time.start(value,frames,curve,true);precise_clock_=true;}
     [[nodiscard]] double effective_pitch() const noexcept {return plan_.pitch.value;}
     [[nodiscard]] std::uint32_t remaining() const noexcept {return plan_.pitch.remaining;}
     [[nodiscard]] const automation_plan& plan() const noexcept {return plan_;}
@@ -38,7 +38,15 @@ public:
         if(advance){plan_.pitch.tick();plan_.time.tick();}
         nodes_[static_cast<std::size_t>(written_%nodes_.size())]=
             {position_,static_cast<float>(plan_.pitch.value),formant,output_};
-        position_+=plan_.time.value*plan_.pitch.value;output_+=plan_.time.value;++written_;
+        if(precise_clock_) {
+            // Compensate accumulation on explicit trajectories. Do not change
+            // the pre-existing unflagged/default 10-ms pitch arithmetic.
+            const double dp=plan_.time.value*plan_.pitch.value-position_error_;
+            const double next_position=position_+dp;position_error_=(next_position-position_)-dp;position_=next_position;
+            const double dw=plan_.time.value-output_error_;
+            const double next_output=output_+dw;output_error_=(next_output-output_)-dw;output_=next_output;
+        }else {position_+=plan_.time.value*plan_.pitch.value;output_+=plan_.time.value;}
+        ++written_;
         nodes_[static_cast<std::size_t>(written_%nodes_.size())]=
             {position_,static_cast<float>(plan_.pitch.value),formant,output_};
     }
@@ -56,7 +64,8 @@ private:
     std::vector<node> nodes_;
     std::uint64_t written_{};
     std::uint32_t ramp_frames_{1};
-    double position_{},output_{};
+    double position_{},output_{},position_error_{},output_error_{};
+    bool precise_clock_{};
     automation_plan plan_;
 };
 }
