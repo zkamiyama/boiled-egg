@@ -1,0 +1,7 @@
+{
+  "schema": "boiled-egg.capacity-policy.v1",
+  "repeats": 3,
+  "minimum_steady_calls": 1200,
+  "budget_fraction": 0.8,
+  "maximum_relative_regression": 1.25
+}

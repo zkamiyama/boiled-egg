@@ -23,6 +23,8 @@ Engine::Engine(const boiledegg_config& c)
       output_(c.channels, c.fifo_frames),
       prev_tail_(static_cast<size_t>(c.channels) * overlap_, 0.0f),
       emit_scratch_(static_cast<size_t>(c.channels) * hop_, 0.0f),
+      correlation_tail_(overlap_, 0.0),
+      correlation_input_(static_cast<size_t>(overlap_) + 2u * static_cast<size_t>(search_), 0.0),
       sample_scratch_(c.channels, 0.0f),
       zero_scratch_(static_cast<size_t>(c.channels) * c.max_block_size, 0.0f),
       zero_ptrs_(c.channels, nullptr) {
@@ -114,18 +116,14 @@ void Engine::process_available() noexcept {
 }
 
 float Engine::correlation(int64_t candidate) noexcept {
-    double dot = 0.0, aa = 1e-12, bb = 1e-12;
+    double dot = 0.0, bb = 1e-12;
     const uint32_t correlation_stride = sample_rate_ >= 88200 ? 8u : 2u;
+    const size_t offset = static_cast<size_t>(candidate - correlation_start_);
     for (uint32_t i = 0; i < overlap_; i += correlation_stride) {
-        double a = 0.0, b = 0.0;
-        for (uint32_t ch = 0; ch < channels_; ++ch) {
-            a += prev_tail_[static_cast<size_t>(ch) * overlap_ + i];
-            b += input_.get(ch, candidate + static_cast<int64_t>(i));
-        }
-        a /= static_cast<double>(channels_); b /= static_cast<double>(channels_);
-        dot += a * b; aa += a * a; bb += b * b;
+        const double a = correlation_tail_[i], b = correlation_input_[offset + i];
+        dot += a * b; bb += b * b;
     }
-    return static_cast<float>(dot / std::sqrt(aa * bb));
+    return static_cast<float>(dot / std::sqrt(correlation_tail_energy_ * bb));
 }
 
 int64_t Engine::choose_candidate(int64_t expected) noexcept {
@@ -136,6 +134,28 @@ int64_t Engine::choose_candidate(int64_t expected) noexcept {
     low = std::max<int64_t>(low, static_cast<int64_t>(input_.start_index()));
     high = std::min<int64_t>(high, static_cast<int64_t>(input_.end_index()) - static_cast<int64_t>(window_));
     if (high < low) return std::numeric_limits<int64_t>::min();
+    // The tail and source channel means are identical for every candidate.
+    // Compute them once per search, not again in each correlation evaluation.
+    // No score approximation, new downmix rule or changed candidate ordering.
+    correlation_start_ = low;
+    correlation_tail_energy_ = 1e-12;
+    const uint32_t stride = sample_rate_ >= 88200 ? 8u : 2u;
+    for (uint32_t i = 0; i < overlap_; i += stride) {
+        double mean = 0.0;
+        for (uint32_t ch = 0; ch < channels_; ++ch)
+            mean += prev_tail_[static_cast<size_t>(ch) * overlap_ + i];
+        mean /= static_cast<double>(channels_);
+        correlation_tail_[i] = mean;
+        correlation_tail_energy_ += mean * mean;
+    }
+    const size_t needed = static_cast<size_t>(high - low) + overlap_;
+    assert(needed <= correlation_input_.size());
+    for (size_t i = 0; i < needed; ++i) {
+        double mean = 0.0;
+        for (uint32_t ch = 0; ch < channels_; ++ch)
+            mean += input_.get(ch, low + static_cast<int64_t>(i));
+        correlation_input_[i] = mean / static_cast<double>(channels_);
+    }
     const int64_t coarse_step = sample_rate_ >= 88200 ? 8 : 4;
     float best_score = -std::numeric_limits<float>::infinity(); int64_t best = low;
     for (int64_t c = low; c <= high; c += coarse_step) {
@@ -265,10 +285,17 @@ void Engine::process_resampler() noexcept {
         } else {
             const int phase = std::clamp(static_cast<int>(frac * ResamplerKernelBank::phases), 0, ResamplerKernelBank::phases - 1);
             const float* kernel = bank.data(cutoff_index, phase);
-            std::fill(sample_scratch_.begin(), sample_scratch_.end(), 0.0f);
-            for (int tap = 0; tap < kTaps; ++tap) {
-                const int64_t idx = first + tap; const float w = kernel[tap];
-                for (uint32_t ch = 0; ch < channels_; ++ch) sample_scratch_[ch] += w * intermediate_.get(ch, idx);
+            for (uint32_t ch = 0; ch < channels_; ++ch) {
+                float sum = 0.0f;
+                if (const float* span = intermediate_.contiguous(ch, first, kTaps)) {
+                    // Same ascending tap order and float multiply/add, without
+                    // repeating range checks and integer remainder per tap.
+                    for (int tap = 0; tap < kTaps; ++tap) sum += kernel[tap] * span[tap];
+                } else {
+                    for (int tap = 0; tap < kTaps; ++tap)
+                        sum += kernel[tap] * intermediate_.get(ch, first + tap);
+                }
+                sample_scratch_[ch] = sum;
             }
         }
         if (!output_.push_one(sample_scratch_.data())) return;

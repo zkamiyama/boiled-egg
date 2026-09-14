@@ -94,6 +94,8 @@ def analyze(root: Path) -> dict:
         cells=itertools.product(plan['probes'],('dsp','control','noop'),PROTOCOLS,(96000,),(32,),(7,),(1,2,3))
     elif plan['matrix']=='periodic':
         cells=itertools.product(plan['probes'],('dsp',),(('periodic','wall'),),(48000,96000),(32,64),(-12,-7,-3,3,7,12),(1,2,3))
+    elif plan['matrix']=='capacity':
+        cells=itertools.product(plan['probes'],('dsp',),(('saturated','wall'),),(48000,96000),(32,64),(-12,-7,-3,0,3,7,12),(1,2,3))
     else:raise ValueError('unknown matrix')
     expected=set(cells);actual=set();names=set();results=[];hashes=defaultdict(set)
     for c in plan['runs']:
