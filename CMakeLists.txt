@@ -167,3 +167,17 @@ if(BOILED_EGG_BUILD_TESTS)
   set_target_properties(boiled_egg_backend_c_test PROPERTIES LINKER_LANGUAGE CXX)
   add_test(NAME boiled_egg_backend_c_test COMMAND boiled_egg_backend_c_test)
 endif()
+
+include(cmake/ExperimentalSpectral.cmake)
+if(BOILED_EGG_BUILD_TOOLS)
+  add_executable(boiled_egg_backend_cli tools/boiled_egg_backend_cli.cpp tools/wav_io.cpp)
+  target_link_libraries(boiled_egg_backend_cli PRIVATE boiled_egg::boiled_egg)
+  target_include_directories(boiled_egg_backend_cli PRIVATE tools)
+endif()
+
+# C-only dynamic exports, including compiler-emitted STL/RTTI in sanitizer builds.
+# An anonymous version script preserves existing unversioned C symbol names.
+if(BOILED_EGG_BUILD_SHARED AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_link_options(boiled_egg PRIVATE "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cmake/boiled_egg.exports")
+  set_property(TARGET boiled_egg APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/boiled_egg.exports")
+endif()

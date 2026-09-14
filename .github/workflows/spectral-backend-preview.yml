@@ -1,0 +1,117 @@
+name: spectral-backend-preview
+on:
+  push:
+    paths: ['src/**', 'include/**', 'tests/**', 'tools/**', 'cmake/**', 'CMakeLists.txt', 'quality/backend_preview/**', 'scripts/test_backend_install.sh', '.github/workflows/spectral-backend-preview.yml']
+  pull_request:
+    paths: ['src/**', 'include/**', 'tests/**', 'tools/**', 'cmake/**', 'CMakeLists.txt', 'quality/backend_preview/**', 'scripts/test_backend_install.sh', '.github/workflows/spectral-backend-preview.yml']
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+defaults:
+  run:
+    shell: bash
+env:
+  OPENBLAS_NUM_THREADS: 1
+  OMP_NUM_THREADS: 1
+jobs:
+  backend:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        spectral: ['OFF', 'ON']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Preserve exact source before validation
+        run: |
+          mkdir validation
+          git archive --format=tar.gz --prefix=boiled-egg/ HEAD > validation/source.tar.gz
+          git rev-parse HEAD > validation/COMMIT.txt
+          git rev-parse HEAD^{tree} > validation/TREE.txt
+          git ls-files -z | xargs -0 sha256sum > validation/SOURCE_SHA256SUMS
+          (cd validation && sha256sum source.tar.gz COMMIT.txt TREE.txt SOURCE_SHA256SUMS > SHA256SUMS)
+      - name: Build and test explicit backend configuration
+        env:
+          COMPILER: ${{ matrix.compiler }}
+          SPECTRAL: ${{ matrix.spectral }}
+        run: |
+          if test "$COMPILER" = clang; then export CC=clang CXX=clang++; else export CC=gcc CXX=g++; fi
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=20 \
+            -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL="$SPECTRAL"
+          cmake --build build -j 2 2>&1 | tee validation/build.log
+          ctest --test-dir build --output-on-failure 2>&1 | tee validation/ctest.log
+      - name: Installed C and C++ consumers, exports, CLI controls
+        env:
+          SPECTRAL: ${{ matrix.spectral }}
+        run: |
+          scripts/check_exports.sh build/libboiled_egg.so
+          if nm -D --defined-only build/libboiled_egg.so | grep -q 'boiledegg_research_'; then
+            echo 'private research symbols exported' >&2; exit 1
+          fi
+          scripts/test_backend_install.sh build "$SPECTRAL"
+          python3 quality/backend_preview/check_cli.py --cli "$PWD/build/boiled_egg_backend_cli" --spectral "$SPECTRAL"
+      - name: Static opt-in SDK package
+        if: matrix.compiler == 'gcc' && matrix.spectral == 'ON'
+        run: |
+          cmake -S . -B build-static -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON -DBOILED_EGG_BUILD_SHARED=OFF
+          cmake --build build-static -j 2
+          ctest --test-dir build-static --output-on-failure | tee validation/static-ctest.log
+          scripts/test_backend_install.sh build-static ON
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spectral-${{ matrix.compiler }}-${{ matrix.spectral }}-${{ github.sha }}
+          path: validation/
+          retention-days: 7
+          if-no-files-found: error
+  sanitizers:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Explicit spectral ASan and UBSan
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1
+        run: |
+          mkdir validation
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON -DBOILED_EGG_SANITIZE=ON
+          cmake --build build -j 2
+          ctest --test-dir build --output-on-failure 2>&1 | tee validation/asan-ubsan.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spectral-sanitizers-${{ github.sha }}
+          path: validation/
+          retention-days: 7
+  thread-sanitizer:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: New spectral audio owners and UI/state mailbox
+        env:
+          TSAN_OPTIONS: halt_on_error=1
+        run: |
+          mkdir validation
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON -DBOILED_EGG_THREAD_SANITIZE=ON \
+            -DBOILED_EGG_BUILD_TOOLS=OFF -DBOILED_EGG_BUILD_BENCH=OFF
+          cmake --build build -j 2
+          ctest --test-dir build --output-on-failure -R 'boiled_egg_(spectral_threads|threading|daw_host)_test' 2>&1 | tee validation/tsan.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spectral-threads-${{ github.sha }}
+          path: validation/
+          retention-days: 7
