@@ -2,6 +2,8 @@
 #include "wav_io.hpp"
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <set>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -13,20 +15,39 @@ float number(const std::string& s){size_t end=0;const float v=std::stof(s,&end);
 uint32_t integer(const std::string& s){size_t end=0;const auto v=std::stoull(s,&end);if(end!=s.size()||s[0]=='-'||v==0||v>1024)throw std::runtime_error("block must be1..1024");return static_cast<uint32_t>(v);}
 }
 int main(int argc,char** argv){try{
-    if(argc<3)throw std::runtime_error("usage: boiled_egg_backend_cli INPUT OUTPUT [--backend wsola|pv] [--quality general|transient|efficient] [--formant off|harmonic|monophonic] [--time R] [--pitch-ratio R] [--formant-ratio R] [--block N] [--allow-experimental]");
-    auto b=boiledegg_default_backend_config();b.io_contract=BOILEDEGG_IO_STREAMING;uint32_t block=64;
-    for(int i=3;i<argc;++i){const std::string key=argv[i];if(key=="--allow-experimental"){b.flags|=BOILEDEGG_BACKEND_ALLOW_EXPERIMENTAL;continue;}
+    if(argc==2 && std::string(argv[1])=="--list-backends") {
+        for(unsigned id:{BOILEDEGG_BACKEND_WSOLA,BOILEDEGG_BACKEND_PHASE_VOCODER}) {
+            boiledegg_backend_info info{};info.struct_size=sizeof(info);
+            if(boiledegg_query_backend(id,&info)!=BOILEDEGG_OK)throw std::runtime_error("backend query failed");
+            const char* status=info.status==BOILEDEGG_BACKEND_STABLE?"stable":info.status==BOILEDEGG_BACKEND_EXPERIMENTAL?"experimental":"unavailable";
+            std::cout<<"backend="<<(id==BOILEDEGG_BACKEND_WSOLA?"wsola":"pv")<<" status="<<status
+                <<" feature_flags="<<info.feature_flags<<" quality_mask="<<info.quality_mode_mask
+                <<" formant_mask="<<info.formant_policy_mask<<"\n";
+        }
+        return 0;
+    }
+    if(argc<3)throw std::runtime_error("usage: boiled_egg_backend_cli INPUT OUTPUT [--backend wsola|pv] [--quality general|transient|efficient] [--formant off|harmonic|monophonic] [--time R] [--pitch-ratio R | --pitch-semitones ST] [--formant-ratio R | --formant-semitones ST] [--block N] [--allow-experimental]");
+    auto b=boiledegg_default_backend_config();b.io_contract=BOILEDEGG_IO_STREAMING;uint32_t block=64;std::set<std::string> seen;
+    for(int i=3;i<argc;++i){const std::string key=argv[i];
+        const std::string group=key=="--pitch-semitones"?"--pitch-ratio":key=="--formant-semitones"?"--formant-ratio":key;
+        if(!seen.insert(group).second)throw std::runtime_error("duplicate/conflicting option: "+key);
+        if(key=="--allow-experimental"){b.flags|=BOILEDEGG_BACKEND_ALLOW_EXPERIMENTAL;continue;}
         if(i+1>=argc)throw std::runtime_error("missing value: "+key);const std::string value=argv[++i];
         if(key=="--backend"){if(value=="wsola")b.backend_id=0;else if(value=="pv")b.backend_id=1;else throw std::runtime_error("invalid backend");}
         else if(key=="--quality"){if(value=="general")b.quality_mode=0;else if(value=="transient")b.quality_mode=1;else if(value=="efficient")b.quality_mode=2;else throw std::runtime_error("invalid quality");}
         else if(key=="--formant"){if(value=="off")b.formant_policy=0;else if(value=="harmonic")b.formant_policy=1;else if(value=="monophonic")b.formant_policy=2;else throw std::runtime_error("invalid formant policy");}
         else if(key=="--time")b.initial_time_ratio=number(value);
         else if(key=="--pitch-ratio")b.initial_pitch_ratio=number(value);
+        else if(key=="--pitch-semitones")b.initial_pitch_ratio=std::pow(2.f,number(value)/12.f);
+        else if(key=="--formant-semitones")b.initial_formant_ratio=std::pow(2.f,number(value)/12.f);
         else if(key=="--formant-ratio")b.initial_formant_ratio=number(value);
         else if(key=="--block")block=integer(value);
         else throw std::runtime_error("unknown argument: "+key);
     }
-    if(std::string(argv[1])==argv[2])throw std::runtime_error("input and output paths must differ");
+    // This new tool refuses existing destinations, including symlink aliases of
+    // the input. A rejected configuration must never overwrite user audio.
+    if(std::filesystem::exists(argv[2]) || std::filesystem::is_symlink(argv[2]))
+        throw std::runtime_error("output must not already exist");
     WavData input;std::string error;if(!read_wav(argv[1],input,error))throw std::runtime_error(error);
     const auto frames=input.interleaved.size()/input.channels;
     auto config=boiledegg_default_config(input.sample_rate,input.channels);config.max_block_size=block;
