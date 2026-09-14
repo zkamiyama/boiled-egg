@@ -32,6 +32,9 @@ typedef enum boiledegg_backend_status {
  * shared frame/resampler map. Fixed-I/O latency covers the ENTIRE pitch range,
  * not just the initial ratio. No change to legacy or unflagged preview handles. */
 #define BOILEDEGG_BACKEND_CONTINUOUS_PITCH (1u << 1)
+/* Explicit input-domain time trajectories; streaming-only, implies continuous
+ * pitch. Pitch/time are owned by the ramp API on these handles, not UI setters. */
+#define BOILEDEGG_BACKEND_CONTINUOUS_TIME (1u << 2)
 /* Backend feature flags: distinct from boiledegg_runtime_info capabilities. */
 #define BOILEDEGG_BACKEND_STREAMING          (1u << 0)
 #define BOILEDEGG_BACKEND_REALTIME           (1u << 1)
@@ -39,6 +42,7 @@ typedef enum boiledegg_backend_status {
 #define BOILEDEGG_BACKEND_DYNAMIC_PITCH      (1u << 3)
 #define BOILEDEGG_BACKEND_DYNAMIC_FORMANT    (1u << 4)
 #define BOILEDEGG_BACKEND_PARAMETER_EVENTS   (1u << 5)
+#define BOILEDEGG_BACKEND_EXPLICIT_RAMPS     (1u << 6)
 
 typedef struct boiledegg_backend_config {
     uint32_t struct_size, version, backend_id, quality_mode;

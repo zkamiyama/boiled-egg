@@ -1,5 +1,6 @@
 #pragma once
 #include <boiled_egg/backend.h>
+#include <boiled_egg/automation.h>
 #include "engine.hpp"
 #include <optional>
 #ifdef BOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL
@@ -12,6 +13,10 @@ class BackendEngine {
 public:
     BackendEngine(const boiledegg_config& c, const boiledegg_backend_config& b);
     boiledegg_result reset() noexcept;
+    boiledegg_result validate_ramps(const boiledegg_ramp_event*,uint32_t,uint32_t,float) const noexcept;
+    boiledegg_result apply_ramp(const boiledegg_ramp_event&) noexcept;
+    boiledegg_result automation_info(boiledegg_automation_info&) const noexcept;
+    bool can_accept_ramp_sample() const noexcept;
     boiledegg_result set_time_ratio(float) noexcept;
     boiledegg_result set_pitch_ratio(float) noexcept;
     boiledegg_result set_formant_ratio(float) noexcept;

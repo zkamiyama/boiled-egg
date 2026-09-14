@@ -27,6 +27,7 @@ public:
         plan_.pitch.start(pitch,written_?ramp_frames_:0U,0);
     }
     void ramp(float value,std::uint32_t frames,std::uint32_t curve) noexcept {plan_.pitch.start(value,frames,curve);}
+    void time_ramp(float value,std::uint32_t frames,std::uint32_t curve) noexcept {plan_.time.start(value,frames,curve);}
     [[nodiscard]] double effective_pitch() const noexcept {return plan_.pitch.value;}
     [[nodiscard]] std::uint32_t remaining() const noexcept {return plan_.pitch.remaining;}
     [[nodiscard]] const automation_plan& plan() const noexcept {return plan_;}

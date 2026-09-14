@@ -35,7 +35,13 @@ typedef struct boiledegg_automation_info {
  * entire batch is validated before DSP/output mutation. A 0-frame call accepts
  * offset-0 events and changes no processing mode. Records use the fixed array
  * stride sizeof(boiledegg_ramp_event); struct_size must equal that size.
- * Pitch ratio/semitones supported. Formant events are intentionally still on
+ * Pitch ratio/semitones supported; time ratio requires CONTINUOUS_TIME and
+ * streaming I/O. Simultaneous trajectories use a conservative safety envelope:
+ * max(current_pitch,target_pitch)*max(current_time,target_time)<=2 after each
+ * equal-offset group. Some safe opposing ramps can therefore be rejected.
+ * On CONTINUOUS_TIME handles pitch/time setters and legacy state writes are
+ * unsupported; use this single-owner API. Existing formant mailboxes still work.
+ * Formant events are intentionally still on
  * the old API. No audible sample-instant change or hard-RT guarantee implied. */
 BOILEDEGG_API boiledegg_result boiledegg_process_realtime_ramps(
     boiledegg_handle*, const float* const*, float* const*, uint32_t frames,
