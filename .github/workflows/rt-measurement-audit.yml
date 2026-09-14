@@ -46,7 +46,16 @@ jobs:
         run: |
           build-audit/rt_audit_probe 256 0 1 dsp periodic wall 96000 32 7 > validation/smoke.csv 2> validation/smoke.json
           git rev-parse HEAD > validation/COMMIT.txt
-          sha256sum build-audit/rt_audit_probe > validation/PROBE_SHA256SUMS
+          sha256sum build-audit/rt_audit_probe build-audit/backend/libboiled_egg.* > validation/PROBE_SHA256SUMS
+      - name: Exact tracked source for independent replay
+        if: always() && matrix.compiler == 'gcc' && matrix.standard == 20
+        run: |
+          mkdir -p validation
+          git archive --format=tar.gz --prefix=boiled-egg/ HEAD > validation/source.tar.gz
+          git rev-parse HEAD > validation/COMMIT.txt
+          git rev-parse HEAD^{tree} > validation/TREE.txt
+          git ls-files -z | xargs -0 sha256sum > validation/SOURCE_SHA256SUMS
+          (cd validation && sha256sum source.tar.gz COMMIT.txt TREE.txt SOURCE_SHA256SUMS > SHA256SUMS)
       - uses: actions/upload-artifact@v4
         if: always()
         with:
