@@ -1,0 +1,82 @@
+name: rt-measurement-audit
+on:
+  push:
+    paths: ['bench/rt_audit/**', '.github/workflows/rt-measurement-audit.yml']
+  pull_request:
+    paths: ['bench/rt_audit/**', '.github/workflows/rt-measurement-audit.yml', 'src/**', 'include/**', 'CMakeLists.txt']
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  calibration:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        standard: [20, 23]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build unchanged product and separate audit
+        env:
+          COMPILER: ${{ matrix.compiler }}
+          STANDARD: ${{ matrix.standard }}
+        run: |
+          mkdir validation
+          if test "$COMPILER" = clang; then export CC=clang CXX=clang++; else export CC=gcc CXX=g++; fi
+          cmake -S . -B build-sdk -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_STANDARD="$STANDARD" -DBOILED_EGG_BUILD_TOOLS=OFF -DBOILED_EGG_BUILD_BENCH=OFF
+          cmake --build build-sdk -j 2 2>&1 | tee validation/product-build.log
+          ctest --test-dir build-sdk --output-on-failure 2>&1 | tee validation/product-tests.log
+          cmake -S bench/rt_audit -B build-audit -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD="$STANDARD"
+          cmake --build build-audit -j 2 2>&1 | tee validation/audit-build.log
+          ctest --test-dir build-audit --output-on-failure 2>&1 | tee validation/calibration.log
+          python -m unittest discover -v -s bench/rt_audit -p 'test_*.py' 2>&1 | tee validation/python.log
+      - name: Fixed-I/O execution smoke, not a timing acceptance threshold
+        run: |
+          build-audit/rt_audit_probe 256 0 1 dsp periodic wall 96000 32 7 > validation/smoke.csv 2> validation/smoke.json
+          git rev-parse HEAD > validation/COMMIT.txt
+          sha256sum build-audit/rt_audit_probe > validation/PROBE_SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rt-audit-${{ matrix.compiler }}-${{ matrix.standard }}-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7
+  sanitizer:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Sanitize observer and real processing path
+        run: |
+          mkdir validation
+          CC=clang CXX=clang++ cmake -S bench/rt_audit -B build-asan -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_CXX_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer' \
+            -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=address,undefined' \
+            -DCMAKE_SHARED_LINKER_FLAGS='-fsanitize=address,undefined'
+          cmake --build build-asan -j 2 2>&1 | tee validation/build.log
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
+            ctest --test-dir build-asan --output-on-failure 2>&1 | tee validation/tests.log
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
+            build-asan/rt_audit_probe 256 0 1 dsp periodic wall 48000 64 7 > validation/smoke.csv 2> validation/smoke.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rt-audit-sanitizer-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7
