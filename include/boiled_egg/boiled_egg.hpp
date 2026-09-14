@@ -1,6 +1,7 @@
 #pragma once
 
 #include <boiled_egg/boiled_egg.h>
+#include <boiled_egg/backend.h>
 #include <span>
 #include <stdexcept>
 #include <utility>
@@ -42,6 +43,16 @@ inline boiledegg_profile_config profile(
 
 class engine {
 public:
+    engine(boiledegg_config config, boiledegg_backend_config backend) {
+        boiledegg_result result = BOILEDEGG_OK;
+        handle_ = boiledegg_create_backend(&config, &backend, &result);
+        if (!handle_) throw error(result);
+    }
+    boiledegg_backend_config backend_configuration() const {
+        auto value=boiledegg_default_backend_config();
+        check(boiledegg_get_backend_configuration(handle_,&value));
+        return value;
+    }
     explicit engine(boiledegg_config config) {
         boiledegg_result result = BOILEDEGG_OK;
         handle_ = boiledegg_create(&config, &result);

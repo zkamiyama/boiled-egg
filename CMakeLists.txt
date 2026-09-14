@@ -32,6 +32,7 @@ set(BOILED_EGG_SOURCES
     src/boiled_egg.cpp
     src/engine.cpp
     src/profile.cpp
+    src/backend.cpp
 )
 
 if(BOILED_EGG_BUILD_SHARED)
@@ -156,3 +157,13 @@ install(FILES
   ${CMAKE_CURRENT_BINARY_DIR}/boiled_eggConfigVersion.cmake
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/boiled_egg
 )
+
+if(BOILED_EGG_BUILD_TESTS)
+  add_executable(boiled_egg_backend_test tests/test_backend_selection.cpp)
+  target_link_libraries(boiled_egg_backend_test PRIVATE boiled_egg::boiled_egg)
+  add_test(NAME boiled_egg_backend_test COMMAND boiled_egg_backend_test)
+  add_executable(boiled_egg_backend_c_test tests/test_backend_c.c)
+  target_link_libraries(boiled_egg_backend_c_test PRIVATE boiled_egg::boiled_egg)
+  set_target_properties(boiled_egg_backend_c_test PROPERTIES LINKER_LANGUAGE CXX)
+  add_test(NAME boiled_egg_backend_c_test COMMAND boiled_egg_backend_c_test)
+endif()

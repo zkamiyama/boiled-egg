@@ -1,5 +1,5 @@
 #include <boiled_egg/boiled_egg.h>
-#include "engine.hpp"
+#include "backend.hpp"
 
 #include <algorithm>
 #include <array>
@@ -35,7 +35,8 @@ struct boiledegg_handle {
     static_assert(std::atomic<uint32_t>::is_always_lock_free,
                   "boiled egg requires lock-free 32-bit atomics");
 
-    boiled_egg::detail::Engine engine;
+    boiled_egg::detail::BackendEngine engine;
+    const boiledegg_backend_config backend;
     std::atomic<uint32_t> requested_time_ratio_bits{float_bits(1.0f)};
     std::atomic<uint32_t> requested_pitch_ratio_bits{float_bits(1.0f)};
     std::atomic<uint32_t> mode{static_cast<uint32_t>(processing_mode::none)};
@@ -51,7 +52,11 @@ struct boiledegg_handle {
     std::array<float*, BOILEDEGG_MAX_CHANNELS> output_ptrs{};
 
     explicit boiledegg_handle(const boiledegg_config& c)
-        : engine(c),
+        : boiledegg_handle(c,boiledegg_default_backend_config()) {}
+    boiledegg_handle(const boiledegg_config& c,const boiledegg_backend_config& b)
+        : engine(c,b), backend(b),
+          requested_time_ratio_bits(float_bits(b.initial_time_ratio)),
+          requested_pitch_ratio_bits(float_bits(b.initial_pitch_ratio)),
           sample_rate(c.sample_rate),
           channels(c.channels),
           max_block_size(c.max_block_size),
@@ -75,6 +80,8 @@ processing_mode load_mode(const boiledegg_handle* h) noexcept {
 }
 
 bool enter_mode(boiledegg_handle* h, processing_mode desired) noexcept {
+    if ((h->backend.io_contract==BOILEDEGG_IO_STREAMING && desired!=processing_mode::streaming) ||
+        (h->backend.io_contract==BOILEDEGG_IO_REALTIME && desired!=processing_mode::realtime)) return false;
     const uint32_t desired_bits = static_cast<uint32_t>(desired);
     uint32_t current = h->mode.load(std::memory_order_acquire);
     if (current == desired_bits) return true;
@@ -297,11 +304,11 @@ boiledegg_result boiledegg_reset(boiledegg_handle* h) {
 boiledegg_result boiledegg_set_time_ratio(boiledegg_handle* h, float r) {
     if (!h || !std::isfinite(r) || r < 0.25f || r > 4.0f) return BOILEDEGG_INVALID_ARGUMENT;
     const bool non_realtime_ratio = std::abs(r - kRealtimeTimeRatio) > kRatioEpsilon;
-    if (non_realtime_ratio && load_mode(h) == processing_mode::realtime) {
+    if (non_realtime_ratio && (load_mode(h) == processing_mode::realtime || h->backend.io_contract==BOILEDEGG_IO_REALTIME)) {
         return BOILEDEGG_UNSUPPORTED_MODE;
     }
     store_ratio(h->requested_time_ratio_bits, r);
-    if (non_realtime_ratio && load_mode(h) == processing_mode::realtime) {
+    if (non_realtime_ratio && (load_mode(h) == processing_mode::realtime || h->backend.io_contract==BOILEDEGG_IO_REALTIME)) {
         store_ratio(h->requested_time_ratio_bits, kRealtimeTimeRatio);
         return BOILEDEGG_UNSUPPORTED_MODE;
     }
@@ -334,7 +341,7 @@ boiledegg_result boiledegg_apply_parameter_events(
     uint32_t event_count) {
     if (!h) return BOILEDEGG_INVALID_ARGUMENT;
     if (event_count > 0 && !events) return BOILEDEGG_INVALID_ARGUMENT;
-    const bool fixed_realtime = load_mode(h) == processing_mode::realtime;
+    const bool fixed_realtime = (load_mode(h) == processing_mode::realtime || h->backend.io_contract==BOILEDEGG_IO_REALTIME);
     for (uint32_t i = 0; i < event_count; ++i) {
         const auto result = validate_parameter_only_event(events[i], fixed_realtime);
         if (result != BOILEDEGG_OK) return result;
@@ -368,12 +375,12 @@ boiledegg_result boiledegg_set_parameter_state(
         return BOILEDEGG_INVALID_ARGUMENT;
     }
     const bool non_realtime_ratio = std::abs(state->time_ratio - kRealtimeTimeRatio) > kRatioEpsilon;
-    if (non_realtime_ratio && load_mode(h) == processing_mode::realtime) {
+    if (non_realtime_ratio && (load_mode(h) == processing_mode::realtime || h->backend.io_contract==BOILEDEGG_IO_REALTIME)) {
         return BOILEDEGG_UNSUPPORTED_MODE;
     }
     store_ratio(h->requested_time_ratio_bits, state->time_ratio);
     store_ratio(h->requested_pitch_ratio_bits, state->pitch_ratio);
-    if (non_realtime_ratio && load_mode(h) == processing_mode::realtime) {
+    if (non_realtime_ratio && (load_mode(h) == processing_mode::realtime || h->backend.io_contract==BOILEDEGG_IO_REALTIME)) {
         store_ratio(h->requested_time_ratio_bits, kRealtimeTimeRatio);
         return BOILEDEGG_UNSUPPORTED_MODE;
     }
@@ -466,7 +473,7 @@ boiledegg_result boiledegg_process_realtime(
 
     if (cursor < frames) {
         const boiledegg_result chunk_result = process_realtime_chunk(h, input, output, cursor, frames - cursor);
-        if (chunk_result != BOILEDEGG_OK && chunk_result != BOILEDEGG_REALTIME_UNDERRUN) return chunk_result;
+        if (chunk_result != BOILEDEGG_OK && chunk_result != BOILEDEGG_REALTIME_UNDERRUN) overall = chunk_result;
         if (chunk_result == BOILEDEGG_REALTIME_UNDERRUN) overall = chunk_result;
     }
     return overall;
@@ -497,4 +504,23 @@ uint32_t boiledegg_input_latency_frames(const boiledegg_handle* h) {
     return h ? h->engine.input_latency_frames() : 0;
 }
 
+boiledegg_result boiledegg_get_backend_configuration(const boiledegg_handle* h,boiledegg_backend_config* out) {
+    if (!h || !out || out->struct_size<sizeof(*out)) return BOILEDEGG_INVALID_ARGUMENT;
+    *out=h->backend; out->struct_size=sizeof(*out); return BOILEDEGG_OK;
+}
 } // extern C
+namespace boiled_egg::detail {
+boiledegg_handle* create_selected_backend(const boiledegg_config& c,
+    const boiledegg_backend_config& b,boiledegg_result* result) {
+    try {
+        auto* h=new boiledegg_handle(c,b);
+        if (result) *result=BOILEDEGG_OK;
+        return h;
+    } catch (const std::bad_alloc&) {
+        if (result) *result=BOILEDEGG_OUT_OF_MEMORY;
+    } catch (...) {
+        if (result) *result=BOILEDEGG_INTERNAL_ERROR;
+    }
+    return nullptr;
+}
+}
