@@ -74,6 +74,11 @@ endif()
 
 if(BOILED_EGG_BUILD_TESTS)
   enable_testing()
+  # Compile internal kernels directly so the public export set stays unchanged.
+  add_executable(boiled_egg_hotpath_cache_test tests/test_hotpath_cache.cpp src/engine.cpp)
+  target_include_directories(boiled_egg_hotpath_cache_test PRIVATE include src)
+  target_compile_features(boiled_egg_hotpath_cache_test PRIVATE cxx_std_20)
+  add_test(NAME boiled_egg_hotpath_cache_test COMMAND boiled_egg_hotpath_cache_test)
   add_executable(boiled_egg_tests tests/test_core.cpp)
   target_link_libraries(boiled_egg_tests PRIVATE boiled_egg::boiled_egg)
   add_test(NAME boiled_egg_tests COMMAND boiled_egg_tests)
