@@ -20,20 +20,28 @@ public:
     }
     [[nodiscard]] bool enabled() const noexcept { return !nodes_.empty(); }
     void reset(float pitch,float formant) noexcept {
-        written_=0;position_=0;pitch_=target_=pitch;step_=0;remaining_=0;
+        written_=0;position_=0;pitch_=target_=pitch;step_=0;remaining_=0;curve_=0;factor_=1;
         if(enabled())nodes_[0]={0,pitch,formant};
     }
     void target(float pitch) noexcept {
         if(target_==pitch)return;
-        target_=pitch;
+        target_=pitch;curve_=0;
         if(!written_){pitch_=target_;step_=0;remaining_=0;return;}
         remaining_=ramp_frames_;step_=(target_-pitch_)/static_cast<double>(remaining_);
     }
+    void ramp(float value,std::uint32_t frames,std::uint32_t curve) noexcept {
+        target_=value;remaining_=frames;curve_=curve;
+        if(!frames){pitch_=target_;step_=0;factor_=1;return;}
+        step_=(target_-pitch_)/static_cast<double>(frames);
+        factor_=curve?std::exp(std::log(target_/pitch_)/static_cast<double>(frames)):1.0;
+    }
+    [[nodiscard]] double effective_pitch() const noexcept {return pitch_;}
+    [[nodiscard]] std::uint32_t remaining() const noexcept {return remaining_;}
     [[nodiscard]] bool can_append(std::uint64_t oldest) const noexcept {
         return written_+1U-oldest<nodes_.size();
     }
     void append(float formant) noexcept {
-        if(remaining_){pitch_=remaining_==1?target_:pitch_+step_;--remaining_;}
+        if(remaining_){pitch_=remaining_==1?target_:(curve_?pitch_*factor_:pitch_+step_);--remaining_;}
         auto& current=nodes_[static_cast<std::size_t>(written_%nodes_.size())];
         current={position_,static_cast<float>(pitch_),formant};
         position_+=time_*pitch_;++written_;
@@ -54,7 +62,8 @@ public:
 private:
     std::vector<node> nodes_;
     std::uint64_t written_{};
-    std::uint32_t ramp_frames_{1},remaining_{};
+    std::uint32_t ramp_frames_{1},remaining_{},curve_{};
+    double factor_{1};
     double position_{},pitch_{1},target_{1},step_{},time_{1};
 };
 }
