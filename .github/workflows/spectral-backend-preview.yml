@@ -1,9 +1,9 @@
 name: spectral-backend-preview
 on:
   push:
-    paths: ['src/**', 'include/**', 'tests/**', 'tools/**', 'cmake/**', 'CMakeLists.txt', '.github/workflows/spectral-backend-preview.yml']
+    paths: ['src/**', 'include/**', 'tests/**', 'tools/**', 'cmake/**', 'CMakeLists.txt', 'quality/backend_preview/**', 'scripts/test_backend_install.sh', '.github/workflows/spectral-backend-preview.yml']
   pull_request:
-    paths: ['src/**', 'include/**', 'tests/**', 'tools/**', 'cmake/**', 'CMakeLists.txt', '.github/workflows/spectral-backend-preview.yml']
+    paths: ['src/**', 'include/**', 'tests/**', 'tools/**', 'cmake/**', 'CMakeLists.txt', 'quality/backend_preview/**', 'scripts/test_backend_install.sh', '.github/workflows/spectral-backend-preview.yml']
 permissions:
   contents: read
 concurrency:
@@ -45,6 +45,24 @@ jobs:
             -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL="$SPECTRAL"
           cmake --build build -j 2 2>&1 | tee validation/build.log
           ctest --test-dir build --output-on-failure 2>&1 | tee validation/ctest.log
+      - name: Installed C and C++ consumers, exports, CLI controls
+        env:
+          SPECTRAL: ${{ matrix.spectral }}
+        run: |
+          scripts/check_exports.sh build/libboiled_egg.so
+          if nm -D --defined-only build/libboiled_egg.so | grep -q 'boiledegg_research_'; then
+            echo 'private research symbols exported' >&2; exit 1
+          fi
+          scripts/test_backend_install.sh build "$SPECTRAL"
+          python3 quality/backend_preview/check_cli.py --cli "$PWD/build/boiled_egg_backend_cli" --spectral "$SPECTRAL"
+      - name: Static opt-in SDK package
+        if: matrix.compiler == 'gcc' && matrix.spectral == 'ON'
+        run: |
+          cmake -S . -B build-static -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON -DBOILED_EGG_BUILD_SHARED=OFF
+          cmake --build build-static -j 2
+          ctest --test-dir build-static --output-on-failure | tee validation/static-ctest.log
+          scripts/test_backend_install.sh build-static ON
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -52,3 +70,48 @@ jobs:
           path: validation/
           retention-days: 7
           if-no-files-found: error
+  sanitizers:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Explicit spectral ASan and UBSan
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1
+        run: |
+          mkdir validation
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON -DBOILED_EGG_SANITIZE=ON
+          cmake --build build -j 2
+          ctest --test-dir build --output-on-failure 2>&1 | tee validation/asan-ubsan.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spectral-sanitizers-${{ github.sha }}
+          path: validation/
+          retention-days: 7
+  thread-sanitizer:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: New spectral audio owners and UI/state mailbox
+        env:
+          TSAN_OPTIONS: halt_on_error=1
+        run: |
+          mkdir validation
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON -DBOILED_EGG_THREAD_SANITIZE=ON \
+            -DBOILED_EGG_BUILD_TOOLS=OFF -DBOILED_EGG_BUILD_BENCH=OFF
+          cmake --build build -j 2
+          ctest --test-dir build --output-on-failure -R 'boiled_egg_(spectral_threads|threading|daw_host)_test' 2>&1 | tee validation/tsan.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spectral-threads-${{ github.sha }}
+          path: validation/
+          retention-days: 7
