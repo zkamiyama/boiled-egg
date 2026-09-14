@@ -44,7 +44,7 @@ int main(){try{
         check(boiledegg_validate_backend_config(&c,&b)==BOILEDEGG_UNSUPPORTED_MODE,"no silent formant fallback");}
     b=boiledegg_default_backend_config();b.quality_mode=BOILEDEGG_QUALITY_MONOPHONIC;
     check(boiledegg_validate_backend_config(&c,&b)==BOILEDEGG_UNSUPPORTED_MODE,"quality and formant policy differ");
-    b=boiledegg_default_backend_config();b.flags=2;check(boiledegg_validate_backend_config(&c,&b)==BOILEDEGG_INVALID_ARGUMENT,"unknown flags");
+    b=boiledegg_default_backend_config();b.flags=0x80000000u;check(boiledegg_validate_backend_config(&c,&b)==BOILEDEGG_INVALID_ARGUMENT,"unknown flags");
     b.flags=0;b.reserved[1]=1;check(boiledegg_validate_backend_config(&c,&b)==BOILEDEGG_INVALID_ARGUMENT,"reserved");
     b.reserved[1]=0;b.version=2;check(boiledegg_validate_backend_config(&c,&b)==BOILEDEGG_INVALID_ARGUMENT,"unknown version");
     b.version=1;b.initial_pitch_ratio=std::numeric_limits<float>::quiet_NaN();

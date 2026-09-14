@@ -19,6 +19,7 @@ void finish_task() noexcept {
 }
 void start_task() noexcept {
     frame_formant_target_=formant_ratio_;
+    latch_timeline();
     frame_active_=true;
     current_steps_=0;
 }
@@ -45,7 +46,7 @@ work_sequence formant_sequence() { for (;;) {
             smoothed_formant_ratio_ = std::abs(error) < 1.0e-6F ? frame_formant_target_
             : smoothed_formant_ratio_ * std::exp(formant_smoothing_ * error);
         }
-        const float envelope_warp = pitch_ratio_ / smoothed_formant_ratio_;
+        const float envelope_warp = frame_pitch() / smoothed_formant_ratio_;
         if (formant_mode_ == BOILEDEGG_RESEARCH_PV_RT_FORMANT_OFF ||
         std::abs(envelope_warp - 1.0F) < 1.0e-6F || formant_gain_limit_db_ <= 0.0F) {
             formant_energy_compensation_ = 1.0F;
@@ -277,8 +278,12 @@ work_sequence frame_sequence() { for (;;) {
             mode_ == BOILEDEGG_RESEARCH_PV_RT_FUZZY, output_phase_.data());
             while (fuzzy_.advance_sliced()) co_yield true;
         }
+        if(timeline_.enabled()) {
+            for(std::uint32_t k=0;k<bins_;++k){if((k&31U)==0U)co_yield true;timeline_predict(k,synthesis_hop);}
+            for(std::uint32_t k=0;k<bins_;++k){if((k&31U)==0U)co_yield true;timeline_phase(k);}
+        }
         for (std::uint32_t ch = 0; ch < channels_; ++ch) {
-            if (!fuzzy_mode) {
+            if (!fuzzy_mode && !timeline_.enabled()) {
                 for (std::uint32_t k = 0; k < bins_; ++k) {
                     if ((k & 31U) == 0U) co_yield true;
 

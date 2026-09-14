@@ -34,3 +34,9 @@ if(BOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL AND BOILED_EGG_BUILD_TESTS AND BOILED
   target_include_directories(boiled_egg_pv_oracle_cli PRIVATE tools)
   target_link_libraries(boiled_egg_pv_oracle_cli PRIVATE boiled_egg_pv_oracle)
 endif()
+
+if(BOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL AND BOILED_EGG_BUILD_TESTS)
+  add_executable(boiled_egg_dynamic_pitch_test tests/test_dynamic_pitch.cpp)
+  target_link_libraries(boiled_egg_dynamic_pitch_test PRIVATE boiled_egg::boiled_egg)
+  add_test(NAME boiled_egg_dynamic_pitch_test COMMAND boiled_egg_dynamic_pitch_test)
+endif()

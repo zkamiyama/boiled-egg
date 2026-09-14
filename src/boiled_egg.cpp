@@ -143,8 +143,12 @@ boiledegg_result validate_parameter_value(const boiledegg_handle* h,uint32_t par
             if(parameter_id==BOILEDEGG_PARAMETER_PITCH_SEMITONES && (value < -24.f || value > 24.f))return BOILEDEGG_INVALID_ARGUMENT;
             const float v=parameter_id==BOILEDEGG_PARAMETER_PITCH_SEMITONES?std::pow(2.0f,value/12.0f):value;
             if(v<.25f || v>4.f)return BOILEDEGG_INVALID_ARGUMENT;
-            const float expected=parameter_id==BOILEDEGG_PARAMETER_TIME_RATIO?h->backend.initial_time_ratio:h->backend.initial_pitch_ratio;
-            if(v!=expected)return BOILEDEGG_UNSUPPORTED_MODE;
+            if(parameter_id!=BOILEDEGG_PARAMETER_TIME_RATIO && (h->backend.flags&BOILEDEGG_BACKEND_CONTINUOUS_PITCH)) {
+                if(v<.5f || v>2.f || double(h->backend.initial_time_ratio)*v>2.0)return BOILEDEGG_UNSUPPORTED_MODE;
+            } else {
+                const float expected=parameter_id==BOILEDEGG_PARAMETER_TIME_RATIO?h->backend.initial_time_ratio:h->backend.initial_pitch_ratio;
+                if(v!=expected)return BOILEDEGG_UNSUPPORTED_MODE;
+            }
         }
     }
     switch (parameter_id) {

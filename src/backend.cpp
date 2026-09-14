@@ -160,7 +160,7 @@ boiledegg_result boiledegg_query_backend(uint32_t id,boiledegg_backend_info* out
     if(id==BOILEDEGG_BACKEND_PHASE_VOCODER){
         info.status=BOILEDEGG_BACKEND_EXPERIMENTAL;
         info.feature_flags=BOILEDEGG_BACKEND_STREAMING|BOILEDEGG_BACKEND_REALTIME|
-            BOILEDEGG_BACKEND_DYNAMIC_FORMANT|BOILEDEGG_BACKEND_PARAMETER_EVENTS;
+            BOILEDEGG_BACKEND_DYNAMIC_PITCH|BOILEDEGG_BACKEND_DYNAMIC_FORMANT|BOILEDEGG_BACKEND_PARAMETER_EVENTS;
         info.quality_mode_mask=(1u<<BOILEDEGG_QUALITY_GENERAL)|(1u<<BOILEDEGG_QUALITY_TRANSIENT);
         info.formant_policy_mask=7;
         info.min_sample_rate=44100;info.max_sample_rate=96000;
@@ -177,7 +177,7 @@ boiledegg_result boiledegg_validate_backend_config(const boiledegg_config* c,con
     if (!c || c->struct_size<sizeof(*c) || !b || b->struct_size<sizeof(*b)) return BOILEDEGG_INVALID_ARGUMENT;
     if (!valid_audio(*c) || b->version!=BOILEDEGG_BACKEND_API_VERSION || b->backend_id>BOILEDEGG_BACKEND_PHASE_VOCODER ||
         b->quality_mode>BOILEDEGG_QUALITY_MONOPHONIC || b->formant_policy>BOILEDEGG_FORMANT_POLICY_MONOPHONIC ||
-        b->io_contract>BOILEDEGG_IO_REALTIME || (b->flags & ~BOILEDEGG_BACKEND_ALLOW_EXPERIMENTAL) ||
+        b->io_contract>BOILEDEGG_IO_REALTIME || (b->flags & ~(BOILEDEGG_BACKEND_ALLOW_EXPERIMENTAL|BOILEDEGG_BACKEND_CONTINUOUS_PITCH)) ||
         b->reserved[0] || b->reserved[1] || !ratio(b->initial_time_ratio,.25f,4.0f) ||
         !ratio(b->initial_pitch_ratio,.25f,4.0f) || !ratio(b->initial_formant_ratio,.5f,2.0f)) return BOILEDEGG_INVALID_ARGUMENT;
     boiledegg_backend_info info{}; info.struct_size=sizeof(info);
@@ -194,6 +194,7 @@ boiledegg_result boiledegg_validate_backend_config(const boiledegg_config* c,con
             double(b->initial_time_ratio)*b->initial_pitch_ratio>2.0) return BOILEDEGG_UNSUPPORTED_MODE;
         return BOILEDEGG_OK;
     }
+    if(b->flags&BOILEDEGG_BACKEND_CONTINUOUS_PITCH)return BOILEDEGG_UNSUPPORTED_MODE;
     if (!valid_audio(boiled_egg::detail::wsola_profile(*c,b->quality_mode))) return BOILEDEGG_INVALID_ARGUMENT;
     return BOILEDEGG_OK;
 }
