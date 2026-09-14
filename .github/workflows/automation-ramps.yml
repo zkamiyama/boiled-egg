@@ -1,0 +1,112 @@
+name: automation-ramps
+on:
+  push:
+    paths: ['src/**', 'include/**', 'tests/**', 'cmake/**', 'CMakeLists.txt', 'quality/automation_ramps/**', 'research/phase_gradient/**', '.github/workflows/automation-ramps.yml']
+  pull_request:
+    paths: ['src/**', 'include/**', 'tests/**', 'cmake/**', 'CMakeLists.txt', 'quality/automation_ramps/**', 'research/phase_gradient/**', '.github/workflows/automation-ramps.yml']
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  OPENBLAS_NUM_THREADS: 1
+  OMP_NUM_THREADS: 1
+jobs:
+  correctness:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        standard: [20, 23]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build public SDK, ramp regressions and independent kernel
+        env:
+          COMPILER: ${{ matrix.compiler }}
+          STANDARD: ${{ matrix.standard }}
+        run: |
+          mkdir validation
+          if test "$COMPILER" = clang; then export CC=clang CXX=clang++; else export CC=gcc CXX=g++; fi
+          python -m pip install numpy scipy soundfile
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_STANDARD="$STANDARD" -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON
+          cmake --build build -j2
+          ctest --test-dir build --output-on-failure | tee validation/ctest.log
+          "$CXX" -O2 -std=c++"$STANDARD" research/phase_gradient/test_kernel.cpp -o build/phase-kernel-test
+          build/phase-kernel-test | tee validation/phase-kernel.log
+          "$CXX" -O3 -std=c++"$STANDARD" -shared -fPIC research/phase_gradient/bridge.cpp -o build/phase_heap.so
+          export BOILED_EGG_PHASE_HEAP_LIBRARY="$PWD/build/phase_heap.so"
+          python -m unittest discover -s research/phase_gradient -p 'test_*.py' -v 2>&1 | tee validation/phase-python.log
+          python -m unittest discover -s quality/automation_ramps -p 'test_*.py' -v 2>&1 | tee validation/ramp-python.log
+      - name: Analytical trajectories and same-window phase comparison
+        if: matrix.compiler == 'gcc' && matrix.standard == 20
+        run: |
+          python quality/automation_ramps/study.py --library "$PWD/build/libboiled_egg.so" --output validation/ramps --workers 2
+          python research/phase_gradient/study.py --kernel "$PWD/build/phase_heap.so" --output validation/phase --workers 2
+      - name: Predeclared empirical capacity, all tails retained
+        if: matrix.compiler == 'gcc' && matrix.standard == 20
+        run: |
+          cpu=$(python -c 'import os; print(min(os.sched_getaffinity(0)))')
+          for r in 1 2 3; do taskset -c "$cpu" build/boiled_egg_explicit_ramp_bench "$r" > "validation/bench-$r.csv"; done
+          python quality/dynamic_pitch/summarize_bench.py --csv validation/bench-1.csv validation/bench-2.csv validation/bench-3.csv --output validation/capacity.json
+      - name: Source and executable identity
+        if: always()
+        run: |
+          mkdir -p validation
+          git rev-parse HEAD > validation/COMMIT.txt
+          git rev-parse HEAD^{tree} > validation/TREE.txt
+          git archive --format=tar.gz --prefix=boiled-egg/ HEAD > validation/source.tar.gz
+          git ls-files -z | xargs -0 sha256sum > validation/SOURCE_SHA256SUMS
+          if test -f build/libboiled_egg.so; then sha256sum build/libboiled_egg.so > validation/LIBRARY_SHA256SUMS; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: automation-ramps-${{ matrix.compiler }}-${{ matrix.standard }}-${{ github.sha }}
+          path: validation/
+          retention-days: 7
+          if-no-files-found: error
+  instrumentation:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address, thread]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Instrument the actual public ramp paths
+        env:
+          SANITIZER: ${{ matrix.sanitizer }}
+        run: |
+          mkdir validation
+          if test "$SANITIZER" = address; then
+            export CC=clang CXX=clang++
+            cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+              -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON -DBOILED_EGG_SANITIZE=ON
+            cmake --build build -j2
+            ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
+              ctest --test-dir build --output-on-failure | tee validation/sanitizer.log
+          else
+            cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+              -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON -DBOILED_EGG_THREAD_SANITIZE=ON
+            cmake --build build --target boiled_egg_ramp_threads_test -j2
+            TSAN_OPTIONS=halt_on_error=1 build/boiled_egg_ramp_threads_test | tee validation/sanitizer.log
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: automation-ramps-${{ matrix.sanitizer }}-${{ github.sha }}
+          path: validation/
+          retention-days: 7
+          if-no-files-found: error
