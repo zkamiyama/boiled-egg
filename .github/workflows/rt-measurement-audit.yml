@@ -27,7 +27,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - name: Build unchanged product and separate audit
+      - name: Build product and separate audit
         env:
           COMPILER: ${{ matrix.compiler }}
           STANDARD: ${{ matrix.standard }}
@@ -47,6 +47,15 @@ jobs:
           build-audit/rt_audit_probe 256 0 1 dsp periodic wall 96000 32 7 > validation/smoke.csv 2> validation/smoke.json
           git rev-parse HEAD > validation/COMMIT.txt
           sha256sum build-audit/rt_audit_probe build-audit/backend/libboiled_egg.* > validation/PROBE_SHA256SUMS
+      - name: Retain declared capacity evidence without a shared-runner absolute gate
+        if: matrix.compiler == 'gcc' && matrix.standard == 20
+        run: |
+          python bench/rt_audit/run_matrix.py --matrix capacity --count 1200 \
+            --probe product="$PWD/build-audit/rt_audit_probe" \
+            --dependency "$PWD/build-audit/backend/libboiled_egg.so" \
+            --policy bench/rt_audit/capacity-policy.json --output validation/capacity
+          python bench/rt_audit/capacity.py validation/capacity \
+            --output validation/capacity-report.json --envelopes validation/capacity-states.csv
       - name: Exact tracked source for independent replay
         if: always() && matrix.compiler == 'gcc' && matrix.standard == 20
         run: |
