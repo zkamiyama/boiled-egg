@@ -25,13 +25,15 @@ def summarize(paths):
   collected={}
   for r in rows:
    key=tuple(r[k] for k in KEYS)
-   if key not in GRID or r['wall_ns']<0 or r['warmup'] not in (0,1):raise ValueError('invalid measurement')
+   if key not in GRID or r['wall_ns']<0 or r['warmup'] not in (0,1) or not 0<=r['fingerprint']<2**64:raise ValueError('invalid measurement')
    collected.setdefault(key,[]).append(r)
   if set(collected)!=GRID:raise ValueError('incomplete configuration grid')
   for key,rr in collected.items():
    if [r['index'] for r in rr]!=list(range(len(rr))):raise ValueError('missing/duplicated input state')
    if sum(not r['warmup'] for r in rr)!=1200:raise ValueError('wrong steady count')
-   cold+=sum(r['warmup'] for r in rr)
+   warm=sum(r['warmup'] for r in rr)
+   if not warm or [r['warmup'] for r in rr]!=[1]*warm+[0]*1200:raise ValueError('warmup must be a nonempty contiguous prefix')
+   cold+=warm
   groups[repeat]=collected
  if set(groups)!={1,2,3}:raise ValueError('three repeats required')
  results=[];passed=True
