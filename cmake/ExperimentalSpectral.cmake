@@ -6,7 +6,7 @@ if(BOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL)
   target_compile_definitions(boiled_egg PRIVATE BOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=1)
 endif()
 if(BOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL AND BOILED_EGG_BUILD_TESTS)
-  # Independent unmodified research API oracle, hidden from the installed ABI.
+  # Direct same-kernel API reference, hidden from the installed ABI; not an independent acoustic oracle.
   add_library(boiled_egg_pv_oracle STATIC src/experimental/pv/pv_rt.cpp src/experimental/pv/fft.cpp)
   target_include_directories(boiled_egg_pv_oracle PUBLIC src/experimental/pv)
   target_compile_features(boiled_egg_pv_oracle PUBLIC cxx_std_20)
