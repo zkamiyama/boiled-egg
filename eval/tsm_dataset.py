@@ -346,7 +346,9 @@ def _corr(a: np.ndarray, b: np.ndarray) -> float:
     if n < 3:
         return 0.0
     x = np.asarray(a[:n], dtype=np.float64); y = np.asarray(b[:n], dtype=np.float64)
-    x -= np.mean(x); y -= np.mean(y)
+    # asarray can alias the caller (including overlapping/read-only slices).
+    # Center into fresh arrays: shift-search must never modify its features.
+    x = x - np.mean(x); y = y - np.mean(y)
     denom = np.linalg.norm(x) * np.linalg.norm(y)
     if denom < EPS:
         return 1.0 if np.linalg.norm(x - y) < 1.0e-9 else 0.0
