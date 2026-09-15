@@ -1,7 +1,7 @@
 name: calibrated-listening
 on:
   push:
-    paths: ['eval/candidate_evidence.py', 'eval/calibrated_listening.py', 'eval/test_calibrated_listening.py', 'eval/test_candidate_integration.py', '.github/workflows/calibrated-listening.yml']
+    paths: ['eval/candidate_evidence.py', 'eval/calibrated_listening.py', 'eval/test_calibrated_listening.py', 'eval/test_candidate_integration.py', 'eval/listening_results.py', 'eval/test_listening_results.py', '.github/workflows/calibrated-listening.yml']
   pull_request:
     paths: ['eval/**', '.github/workflows/calibrated-listening.yml']
 permissions:
@@ -42,7 +42,7 @@ jobs:
           ctest --test-dir build --output-on-failure 2>&1 | tee validation/product-tests.log
       - name: Reject invalid evidence and run real calibrated panel
         run: |
-          PYTHONPATH=eval python -W error::ResourceWarning -m unittest -v test_calibrated_listening 2>&1 | tee validation/unit.log
+          PYTHONPATH=eval python -W error::ResourceWarning -m unittest -v test_calibrated_listening test_listening_results 2>&1 | tee validation/unit.log
           BOILED_EGG_CLI="$PWD/build/boiled_egg_cli" \
           BOILED_EGG_RB_LIBRARY=/usr/lib/x86_64-linux-gnu/librubberband.so.2 \
           BOILED_EGG_LISTENING_RESULTS="$PWD/validation/integration" \
