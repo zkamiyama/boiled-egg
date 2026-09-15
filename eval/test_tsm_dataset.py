@@ -19,6 +19,30 @@ from tsm_dataset import compute_metrics, import_dataset, read_manifest
 
 
 class TsmDatasetToolsTest(unittest.TestCase):
+    def test_correlation_does_not_mutate_overlapping_views(self) -> None:
+        from tsm_dataset import _corr
+        signal = np.arange(29, dtype=np.float64) ** 2 + 3.0
+        before = signal.copy()
+        a, b = signal[2:-3], signal[4:-1]
+        expected = float(np.corrcoef(a.copy(), b.copy())[0, 1])
+        self.assertAlmostEqual(_corr(a, b), expected, places=14)
+        np.testing.assert_array_equal(signal, before)
+        signal.flags.writeable = False
+        self.assertAlmostEqual(_corr(a, b), expected, places=14)
+        self.assertAlmostEqual(_corr(signal, signal), 1.0, places=14)
+
+    def test_shift_search_is_repeatable_and_preserves_input(self) -> None:
+        from tsm_dataset import _best_shift, _corr
+        rng = np.random.default_rng(20260915)
+        source = rng.normal(size=127) + 4.0
+        delayed = np.r_[np.zeros(5), source[:-5]]
+        a, b = source.copy(), delayed.copy()
+        for _ in range(3):
+            self.assertEqual(_best_shift(source, delayed, 9), 5)
+            np.testing.assert_array_equal(source, a)
+            np.testing.assert_array_equal(delayed, b)
+        self.assertAlmostEqual(_corr(source[:-5], delayed[5:]), 1.0, places=14)
+
     def test_import_and_identity_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

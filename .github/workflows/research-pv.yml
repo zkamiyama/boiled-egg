@@ -15,6 +15,12 @@ on:
       - "eval/**"
       - ".github/workflows/research-pv.yml"
 
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+
 jobs:
   cpp-streaming-pv:
     strategy:
@@ -67,18 +73,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libsndfile1
           python3 -m pip install --user -r requirements-dev.txt
-      - name: Compile Python tools
-        run: >-
-          python3 -m py_compile
-          eval/tsm_dataset.py
-          eval/import_tsm_dataset.py
-          eval/run_tsm_benchmark.py
-          eval/make_final_research_pack.py
-          research/pv_reference.py
-          research/run_pv_experiment.py
-          research/run_cpp_pv_rt_experiment.py
-          research/tune_cpp_pv_rt.py
-          research/transient_graft.py
-          research/run_transient_graft_experiment.py
+      - name: Compile tracked Python tools
+        run: |
+          python3 - <<'PY'
+          import py_compile
+          import subprocess
+          files = subprocess.check_output(
+              ['git', 'ls-files', '-z', '--', 'eval', 'research']).decode().split('\0')
+          files = [path for path in files if path.endswith('.py')]
+          required = {'eval/tsm_dataset.py', 'eval/test_tsm_dataset.py',
+                      'research/pv_reference.py'}
+          if not required.issubset(files):
+              raise RuntimeError('required evaluation/research tools are missing')
+          for path in files:
+              py_compile.compile(path, doraise=True)
+          print(f'Compiled all {len(files)} tracked Python evaluation/research tools')
+          PY
       - name: Generated mini-dataset test
         run: python3 -m unittest -v eval/test_tsm_dataset.py
