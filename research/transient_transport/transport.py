@@ -12,7 +12,7 @@ from scipy import ndimage, signal
 _spec = importlib.util.spec_from_file_location('transport_legacy_pv', Path(__file__).parents[1]/'phase_gradient/experiment.py')
 base = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(base)
-MODES = ('locked', 'heap', 'split_heap_long', 'split_locked_ola', 'split_heap_ola', 'split_heap_anchor')
+MODES = ('locked', 'heap', 'split_heap_long', 'split_locked_ola', 'split_heap_ola', 'split_heap_anchor', 'split_heap_power', 'split_heap_anchor_power')
 
 
 def audio(x):
@@ -110,7 +110,26 @@ def map_positions(positions, out_knots, in_knots):
     return in_knots[j]+(positions-out_knots[j])*(in_knots[j+1]-in_knots[j])/(out_knots[j+1]-out_knots[j])
 
 
-def ola(percussive, rate, ratio, anchored=False, mapper=None):
+def overlap_weights(synth, centers, w, length, unit_power=False):
+    """White-noise covariance normalizer; duplicate source indices cohere.
+
+    No audio/reference-dependent gain. The distinct-index independence model
+    need not hold for colored noise or leaked tonal material.
+    """
+    den = np.zeros(length)
+    for i,(s,c) in enumerate(zip(synth,centers)):
+        den[s:s+len(w)] += w*w if unit_power else w
+        if unit_power:
+            j = i-1
+            while j>=0 and synth[j]+len(w)>s:
+                offset = s-synth[j]
+                if centers[j]-synth[j] == c-s:
+                    den[s:s+len(w)-offset] += 2*w[:len(w)-offset]*w[offset:]
+                j -= 1
+    return np.sqrt(den) if unit_power else den
+
+
+def ola(percussive, rate, ratio, anchored=False, mapper=None, unit_power=False):
     x = audio(percussive)
     target = int(np.floor(len(x)*ratio+.5))
     if not len(x):
@@ -124,19 +143,18 @@ def ola(percussive, rate, ratio, anchored=False, mapper=None):
     continuous = (mapper or map_positions)(synth,out,src)
     centers = np.floor(continuous+.5).astype(np.int64)
     y = np.zeros((target+2*win,x.shape[1]))
-    den = np.zeros(len(y))
+    den = overlap_weights(synth,centers,w,len(y),unit_power)
     for s,c in zip(synth,centers):
         a,b = max(0,c-win//2),min(len(x),c+win//2)
         frame = np.zeros((win,x.shape[1]))
         if b>a:
             frame[a-c+win//2:b-c+win//2] = x[a:b]
         y[s:s+win] += frame*w[:,None]
-        den[s:s+win] += w
     weights = den[win//2:win//2+target]
     if target and weights.min()<=1e-12:
         raise ValueError('OLA coverage hole')
     result = y[win//2:win//2+target]/weights[:,None]
-    return result, dict(anchors=len(anchors),grain_frames=len(synth),min_weight=float(weights.min()) if target else 0.)
+    return result, dict(anchors=len(anchors),grain_frames=len(synth),min_weight=float(weights.min()) if target else 0.,unit_power=unit_power)
 
 
 def render(x, rate, ratio=1., mode='split_heap_ola', kernel=None, mapper=None):
@@ -152,7 +170,7 @@ def render(x, rate, ratio=1., mode='split_heap_ola', kernel=None, mapper=None):
     if mode=='split_heap_long':
         py,ps = base.render(p,rate,time=ratio,mode='heap',kernel_path=kernel)
     else:
-        py,ps = ola(p,rate,ratio,mode=='split_heap_anchor',mapper)
+        py,ps = ola(p,rate,ratio,'anchor' in mode,mapper,mode.endswith('_power'))
     y = hy+py
     if not np.isfinite(y).all():
         raise ValueError('nonfinite reconstruction')
