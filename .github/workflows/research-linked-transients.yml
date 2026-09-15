@@ -1,0 +1,94 @@
+name: research-linked-transients
+on:
+  push:
+    paths: ['research/linked_transients/**', '.github/workflows/research-linked-transients.yml']
+  pull_request:
+    paths: ['research/**', '.github/workflows/research-linked-transients.yml']
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  OPENBLAS_NUM_THREADS: 1
+  OMP_NUM_THREADS: 1
+jobs:
+  correctness:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        standard: [20, 23]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build kernels and run all checkout-only tests
+        env:
+          COMPILER: ${{ matrix.compiler }}
+          STANDARD: ${{ matrix.standard }}
+        run: |
+          mkdir validation
+          if test "$COMPILER" = clang; then export CXX=clang++; else export CXX=g++; fi
+          python -m pip install numpy==2.3.5 scipy==1.17.0 soundfile==0.13.1
+          cmake -S research/linked_transients -B build-linked -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD="$STANDARD"
+          cmake --build build-linked -j2
+          ctest --test-dir build-linked --output-on-failure | tee validation/ctest.log
+          build-linked/linked_events_test | tee validation/kernel.log
+          export BOILED_EGG_PHASE_HEAP_LIBRARY="$PWD/build-linked/libphase_heap.so"
+          export BOILED_EGG_LINKED_EVENTS_LIBRARY="$PWD/build-linked/liblinked_events.so"
+          python -W error::ResourceWarning -m unittest discover -s research/linked_transients -p 'test_*.py' -v 2>&1 | tee validation/python.log
+      - name: Fixed detector and synthesis grids, no external audio
+        if: matrix.compiler == 'gcc' && matrix.standard == 20
+        run: |
+          python research/linked_transients/assess.py --suite detector --heap "$PWD/build-linked/libphase_heap.so" \
+            --events "$PWD/build-linked/liblinked_events.so" --output validation/detector --workers 2
+          python research/linked_transients/assess.py --suite synthetic --heap "$PWD/build-linked/libphase_heap.so" \
+            --events "$PWD/build-linked/liblinked_events.so" --output validation/synthetic --workers 2
+          PYTHONPATH=research/linked_transients python -c 'from pathlib import Path; from audit_results import verify; verify(Path("validation/detector")); verify(Path("validation/synthetic"))'
+      - name: Source identity
+        if: always()
+        run: |
+          mkdir -p validation
+          git rev-parse HEAD > validation/COMMIT.txt
+          git rev-parse HEAD^{tree} > validation/TREE.txt
+          git archive --format=tar.gz --prefix=boiled-egg/ HEAD > validation/source.tar.gz
+          git ls-files -z | xargs -0 sha256sum > validation/SOURCE_SHA256SUMS
+          if test -f build-linked/libphase_heap.so; then sha256sum build-linked/libphase_heap.so build-linked/liblinked_events.so > validation/BINARY_SHA256SUMS; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linked-transients-${{ matrix.compiler }}-${{ matrix.standard }}-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7
+  sanitizer:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Address and undefined behavior checks
+        run: |
+          mkdir validation
+          cmake -S research/linked_transients -B build-sanitized -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_CXX_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer'
+          cmake --build build-sanitized -j2
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
+            ctest --test-dir build-sanitized --output-on-failure | tee validation/sanitizer.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linked-transients-sanitizer-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7
