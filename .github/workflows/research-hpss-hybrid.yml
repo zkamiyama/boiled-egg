@@ -1,0 +1,84 @@
+name: research-hpss-hybrid
+on:
+  push:
+    paths: ['research/hpss_hybrid/**', '.github/workflows/research-hpss-hybrid.yml']
+  pull_request:
+    paths: ['research/hpss_hybrid/**', '.github/workflows/research-hpss-hybrid.yml']
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  OPENBLAS_NUM_THREADS: 1
+  OMP_NUM_THREADS: 1
+jobs:
+  correctness:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        standard: [20, 23]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build and verify isolated research kernels
+        env:
+          COMPILER: ${{ matrix.compiler }}
+          STANDARD: ${{ matrix.standard }}
+        run: |
+          mkdir validation
+          if test "$COMPILER" = clang; then export CC=clang CXX=clang++; else export CC=gcc CXX=g++; fi
+          python -m pip install numpy scipy soundfile
+          cmake -S research/hpss_hybrid -B build-hpss -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD="$STANDARD"
+          cmake --build build-hpss -j2
+          ctest --test-dir build-hpss --output-on-failure | tee validation/kernel-tests.log
+          export BOILED_EGG_HPSS_LIBRARY="$PWD/build-hpss/libhpss_kernels.so"
+          export BOILED_EGG_PHASE_HEAP_LIBRARY="$PWD/build-hpss/libphase_heap.so"
+          export BOILED_EGG_HPSS_POWER_LIBRARY="$PWD/build-hpss/libhpss_power.so"
+          python -W error::ResourceWarning -m unittest discover -s research/hpss_hybrid -p 'test_*.py' -v 2>&1 | tee validation/python-tests.log
+      - name: Preserve exact source identity
+        if: always()
+        run: |
+          mkdir -p validation
+          git rev-parse HEAD > validation/COMMIT.txt
+          git rev-parse HEAD^{tree} > validation/TREE.txt
+          git archive --format=tar.gz --prefix=boiled-egg/ HEAD > validation/source.tar.gz
+          git ls-files -z | xargs -0 sha256sum > validation/SOURCE_SHA256SUMS
+          if test -f build-hpss/libhpss_kernels.so; then sha256sum build-hpss/*.so > validation/KERNEL_SHA256SUMS; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hpss-${{ matrix.compiler }}-${{ matrix.standard }}-${{ github.sha }}
+          path: validation/
+          retention-days: 7
+          if-no-files-found: error
+  sanitizer:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Address and undefined behavior instrumentation
+        run: |
+          mkdir validation
+          CC=clang CXX=clang++ cmake -S research/hpss_hybrid -B build-sanitized -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer'
+          cmake --build build-sanitized -j2
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
+            ctest --test-dir build-sanitized --output-on-failure | tee validation/sanitizers.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hpss-sanitized-${{ github.sha }}
+          path: validation/
+          retention-days: 7
+          if-no-files-found: error
