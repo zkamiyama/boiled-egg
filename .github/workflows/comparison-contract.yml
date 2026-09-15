@@ -1,0 +1,67 @@
+name: comparison-contract
+on:
+  push:
+    paths:
+      - 'eval/comparison_contract.py'
+      - 'eval/run_external.py'
+      - 'eval/calibrate_external.py'
+      - 'eval/test_comparison*.py'
+      - '.github/workflows/comparison-contract.yml'
+  pull_request:
+    paths: ['eval/**', '.github/workflows/comparison-contract.yml']
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  OPENBLAS_NUM_THREADS: 1
+  OMP_NUM_THREADS: 1
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Dependencies and unchanged product build
+        run: |
+          mkdir validation
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libsndfile1
+          python -m pip install numpy==2.3.5 scipy==1.17.0 soundfile==0.13.1
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j2
+          ctest --test-dir build --output-on-failure 2>&1 | tee validation/product-ctest.log
+      - name: Fail-closed unit and real-executable integration
+        run: |
+          PYTHONPATH=eval python -W error::ResourceWarning -m unittest -v test_comparison_contract 2>&1 | tee validation/unit.log
+          BOILED_EGG_CLI="$PWD/build/boiled_egg_cli" BOILED_EGG_COMPARISON_RESULTS="$PWD/validation/integration" \
+            python -W error::ResourceWarning eval/test_comparison_integration.py 2>&1 | tee validation/integration.log
+          python -m unittest -v eval/test_tsm_dataset.py 2>&1 | tee validation/existing-dataset.log
+      - name: Source identity
+        if: always()
+        run: |
+          mkdir -p validation
+          git rev-parse HEAD > validation/COMMIT.txt
+          git rev-parse HEAD^{tree} > validation/TREE.txt
+          git ls-files -z | xargs -0 sha256sum > validation/SOURCE_SHA256SUMS
+          git archive --format=tar.gz --prefix=boiled-egg/ HEAD > validation/source.tar.gz
+          if test -f build/boiled_egg_cli; then sha256sum build/boiled_egg_cli build/libboiled_egg.so > validation/PRODUCT_SHA256SUMS; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: comparison-contract-${{ matrix.python }}-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7
