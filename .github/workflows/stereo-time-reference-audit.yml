@@ -1,0 +1,88 @@
+name: stereo-time-reference-audit
+on:
+  push:
+    paths: ['eval/formant_audit/**', 'eval/STEREO_TIME_PROTOCOL.md', '.github/workflows/stereo-time-reference-audit.yml']
+  pull_request:
+    paths: ['eval/**', '.github/workflows/stereo-time-reference-audit.yml']
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  OPENBLAS_NUM_THREADS: 1
+  OMP_NUM_THREADS: 1
+jobs:
+  diagnostics:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: zkamiyama/boiled-egg
+          ref: f8e5ef2cbce84f396597860a408b4a3084796115
+          path: .pv-dependency
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Build pinned spectral dependency and calibrate measurements
+        run: |
+          mkdir validation
+          sudo apt-get update
+          sudo apt-get install -y libsndfile1 librubberband2
+          python -m pip install numpy==2.3.5 scipy==1.17.0 soundfile==0.13.1
+          python -m pip freeze > validation/PYTHON_VERSIONS.txt
+          dpkg-query -W librubberband2 libsndfile1 > validation/REFERENCE_VERSIONS.txt
+          cmake -S .pv-dependency -B build-pv -G Ninja -DCMAKE_BUILD_TYPE=Release -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON
+          cmake --build build-pv --target boiled_egg_backend_cli -j2
+          python -W error::ResourceWarning -m unittest discover -s eval/formant_audit -p 'test_*.py' -v 2>&1 | tee validation/calibration.log
+      - name: Complete diagnostic grid; retain failed relational controls, not a quality gate
+        run: |
+          # run() returns all failures as data; the standalone CLI still exits1
+          # when a relational control fails. This job validates evidence creation,
+          # not a claim that all external engines preserve the tested relations.
+          PYTHONPATH=eval/formant_audit python - <<'PY'
+          from argparse import Namespace
+          from pathlib import Path
+          import json
+          import stereo_time
+          report = stereo_time.run(Namespace(
+              spectral=Path('build-pv/boiled_egg_backend_cli').resolve(),
+              reference=Path('/usr/lib/x86_64-linux-gnu/librubberband.so.2'),
+              rates=[48000], output=Path('validation/stereo-time')))
+          assert report['outputs'] == report['metadata_passed'] == 160
+          assert report['measurement_errors'] == 0
+          assert report['relation_cases'] == 80 and report['channel_exchange_cases'] == 40
+          assert report['grants_listening_eligibility'] is False
+          assert report['quality_selection'] is None
+          print(json.dumps(report, indent=2))
+          PY
+      - name: Exact source and dependency identity
+        if: always()
+        run: |
+          mkdir -p validation
+          git rev-parse HEAD > validation/COMMIT.txt
+          git rev-parse HEAD^{tree} > validation/TREE.txt
+          git archive --format=tar.gz --prefix=boiled-egg/ HEAD > validation/source.tar.gz
+          git ls-files -z | xargs -0 sha256sum > validation/SOURCE_SHA256SUMS
+          git -C .pv-dependency rev-parse HEAD > validation/PV_COMMIT.txt
+          if test -f build-pv/boiled_egg_backend_cli; then sha256sum build-pv/boiled_egg_backend_cli build-pv/libboiled_egg.so > validation/PV_BINARIES_SHA256SUMS; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stereo-time-${{ matrix.python }}-${{ github.sha }}
+          path: |
+            validation/
+            !validation/stereo-time/cases/**/output.wav
+          if-no-files-found: error
+          retention-days: 7
