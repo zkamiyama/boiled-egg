@@ -6,6 +6,9 @@ on:
       - 'eval/run_external.py'
       - 'eval/calibrate_external.py'
       - 'eval/test_comparison*.py'
+      - 'eval/reference_rubberband.py'
+      - 'eval/calibrate_reference.py'
+      - 'eval/test_reference_rubberband.py'
       - '.github/workflows/comparison-contract.yml'
   pull_request:
     paths: ['eval/**', '.github/workflows/comparison-contract.yml']
@@ -38,8 +41,10 @@ jobs:
         run: |
           mkdir validation
           sudo apt-get update
-          sudo apt-get install -y ffmpeg libsndfile1
+          sudo apt-get install -y ffmpeg libsndfile1 librubberband2
           python -m pip install numpy==2.3.5 scipy==1.17.0 soundfile==0.13.1
+          dpkg-query -W ffmpeg librubberband2 libsndfile1 > validation/SYSTEM_VERSIONS.txt
+          python -m pip freeze > validation/PYTHON_VERSIONS.txt
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build build -j2
           ctest --test-dir build --output-on-failure 2>&1 | tee validation/product-ctest.log
@@ -48,6 +53,8 @@ jobs:
           PYTHONPATH=eval python -W error::ResourceWarning -m unittest -v test_comparison_contract 2>&1 | tee validation/unit.log
           BOILED_EGG_CLI="$PWD/build/boiled_egg_cli" BOILED_EGG_COMPARISON_RESULTS="$PWD/validation/integration" \
             python -W error::ResourceWarning eval/test_comparison_integration.py 2>&1 | tee validation/integration.log
+          BOILED_EGG_RB_LIBRARY=/usr/lib/x86_64-linux-gnu/librubberband.so.2 \
+            python -W error::ResourceWarning eval/test_reference_rubberband.py 2>&1 | tee validation/direct-reference.log
           python -m unittest -v eval/test_tsm_dataset.py 2>&1 | tee validation/existing-dataset.log
       - name: Source identity
         if: always()
@@ -58,6 +65,7 @@ jobs:
           git ls-files -z | xargs -0 sha256sum > validation/SOURCE_SHA256SUMS
           git archive --format=tar.gz --prefix=boiled-egg/ HEAD > validation/source.tar.gz
           if test -f build/boiled_egg_cli; then sha256sum build/boiled_egg_cli build/libboiled_egg.so > validation/PRODUCT_SHA256SUMS; fi
+          if test -f /usr/lib/x86_64-linux-gnu/librubberband.so.2; then sha256sum /usr/lib/x86_64-linux-gnu/librubberband.so.2 > validation/REFERENCE_SHA256SUMS; fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
