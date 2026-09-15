@@ -1,0 +1,89 @@
+name: research-phase-edges
+on:
+  push:
+    paths: ['research/phase_edges/**', '.github/workflows/research-phase-edges.yml']
+  pull_request:
+    paths: ['research/phase_edges/**', '.github/workflows/research-phase-edges.yml']
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  OPENBLAS_NUM_THREADS: 1
+  OMP_NUM_THREADS: 1
+jobs:
+  correctness:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        standard: [20, 23]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Independent kernels and Python oracles
+        env:
+          COMPILER: ${{ matrix.compiler }}
+          STANDARD: ${{ matrix.standard }}
+        run: |
+          mkdir validation
+          if test "$COMPILER" = clang; then export CXX=clang++; else export CXX=g++; fi
+          python -m pip install numpy scipy soundfile
+          cmake -S research/phase_edges -B build-edge -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_CXX_STANDARD="$STANDARD"
+          cmake --build build-edge -j2
+          ctest --test-dir build-edge --output-on-failure 2>&1 | tee validation/kernel-tests.log
+          export BOILED_EGG_PHASE_HEAP_LIBRARY="$PWD/build-edge/libphase_heap.so"
+          export BOILED_EGG_PHASE_EDGE_LIBRARY="$PWD/build-edge/libphase_edge.so"
+          python -W error::ResourceWarning -m unittest discover -s research/phase_edges -p 'test_*.py' -v 2>&1 | tee validation/python-tests.log
+      - name: Frozen analytical grid, no external recordings
+        if: matrix.compiler == 'gcc' && matrix.standard == 20
+        run: |
+          python research/phase_edges/study.py --suite synthetic --kernel "$PWD/build-edge/libphase_heap.so" \
+            --edge "$PWD/build-edge/libphase_edge.so" --cache "$PWD/edge-cache" --output validation/synthetic --workers 2
+          build-edge/edge_kernel_bench > validation/traversal-bench.csv
+      - name: Source identity
+        if: always()
+        run: |
+          mkdir -p validation
+          git rev-parse HEAD > validation/COMMIT.txt
+          git rev-parse HEAD^{tree} > validation/TREE.txt
+          git archive --format=tar.gz --prefix=boiled-egg/ HEAD > validation/source.tar.gz
+          git ls-files -z | xargs -0 sha256sum > validation/SOURCE_SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: phase-edges-${{ matrix.compiler }}-${{ matrix.standard }}-${{ github.sha }}
+          path: validation/
+          retention-days: 7
+          if-no-files-found: error
+  sanitizer:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Address and undefined behavior checks
+        run: |
+          mkdir validation
+          cmake -S research/phase_edges -B build-edge -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_CXX_COMPILER=clang++ -DPHASE_EDGES_SANITIZE=ON
+          cmake --build build-edge -j2
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
+            ctest --test-dir build-edge --output-on-failure 2>&1 | tee validation/sanitizers.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: phase-edges-sanitizers-${{ github.sha }}
+          path: validation/
+          retention-days: 7
+          if-no-files-found: error
