@@ -238,9 +238,8 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
 cmake --build build -j2
 ctest --test-dir build --output-on-failure
 OPENBLAS_NUM_THREADS=1 python quality/automation_ramps/study.py \
-  --library "$PWD/build/libboiled_egg.so" --output results/analytic --workers2
+  --library "$PWD/build/libboiled_egg.so" --output results/analytic --workers 2
 # For actual reference audio add --refs /absolute/reference/directory.
-# Use '--workers 2' (separate flag/value) with the study CLI.
 ```
 
 The accompanying bundle retains source snapshots, raw CSV/JSON, commands, failure
