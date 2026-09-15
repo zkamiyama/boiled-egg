@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass
 import hashlib
 import json
 import math
+from numbers import Real
 import os
 from pathlib import Path
 import re
@@ -46,14 +47,18 @@ class Request:
 
     def __post_init__(self) -> None:
         for value in (self.duration_ratio, self.pitch_ratio):
-            if not math.isfinite(value) or not 0.5 <= value <= 2.0:
+            if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) or not 0.5 <= value <= 2.0:
                 raise ValueError("primary comparison range is finite [0.5, 2] for both ratios")
+        # A numerical contract must not distinguish JSON 1 from 1.0 in hashes.
+        # Canonicalize before creating evidence keys, without quantizing values.
+        object.__setattr__(self, "duration_ratio", float(self.duration_ratio))
+        object.__setattr__(self, "pitch_ratio", float(self.pitch_ratio))
         if type(self.duration_tolerance_frames) is not int or not 0 <= self.duration_tolerance_frames <= 1:
             raise ValueError("rounding allowance must be 0 or 1 frame; no free duration fitting")
 
     @classmethod
     def from_semitones(cls, duration: float, semitones: float) -> Request:
-        if not math.isfinite(semitones) or not -12 <= semitones <= 12:
+        if isinstance(semitones, bool) or not isinstance(semitones, Real) or not math.isfinite(semitones) or not -12 <= semitones <= 12:
             raise ValueError("pitch must be finite and within +/-12 semitones")
         return cls(duration, 2.0 ** (semitones / 12.0))
 
