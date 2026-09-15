@@ -1,4 +1,5 @@
 #include <boiled_egg/boiled_egg.hpp>
+#include "ramp_randomized_checks.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -39,6 +40,8 @@ static Audio run(unsigned rate,unsigned quality,unsigned policy,unsigned block,b
     return y;
 }
 int main(){try{
+    const auto randomized = boiled_egg::test::ramp_randomized::verify();
+    std::cout << randomized << " randomized accepted-prefix checkpoints passed\n";
     unsigned samples=0,comparisons=0;
     for(unsigned curve:{0U,1U}) {
         auto c=boiledegg_default_config(48000,1);c.max_block_size=1;boiled_egg::engine h(c,cfg());
