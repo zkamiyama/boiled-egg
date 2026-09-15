@@ -9,6 +9,36 @@ BackendEngine::BackendEngine(const boiledegg_config& c,const boiledegg_backend_c
 #endif
     wsola_.emplace(c);
 }
+boiledegg_result BackendEngine::validate_ramps(const boiledegg_ramp_event* e,uint32_t n,uint32_t frames,float pitch) const noexcept {
+#ifdef BOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL
+    if(spectral_)return spectral_->validate_ramps(e,n,frames,pitch);
+#else
+    (void)e;(void)n;(void)frames;(void)pitch;
+#endif
+    return BOILEDEGG_UNSUPPORTED_MODE;
+}
+boiledegg_result BackendEngine::apply_ramp(const boiledegg_ramp_event& e) noexcept {
+#ifdef BOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL
+    if(spectral_)return spectral_->apply_ramp(e);
+#else
+    (void)e;
+#endif
+    return BOILEDEGG_UNSUPPORTED_MODE;
+}
+boiledegg_result BackendEngine::automation_info(boiledegg_automation_info& i) const noexcept {
+#ifdef BOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL
+    if(spectral_)return spectral_->automation_info(i);
+#else
+    (void)i;
+#endif
+    return BOILEDEGG_UNSUPPORTED_MODE;
+}
+bool BackendEngine::can_accept_ramp_sample() const noexcept {
+#ifdef BOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL
+    if(spectral_)return spectral_->can_accept_ramp_sample();
+#endif
+    return false;
+}
 boiledegg_result BackendEngine::reset() noexcept {
     if(wsola_)return wsola_->reset();
 #ifdef BOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL
@@ -160,7 +190,8 @@ boiledegg_result boiledegg_query_backend(uint32_t id,boiledegg_backend_info* out
     if(id==BOILEDEGG_BACKEND_PHASE_VOCODER){
         info.status=BOILEDEGG_BACKEND_EXPERIMENTAL;
         info.feature_flags=BOILEDEGG_BACKEND_STREAMING|BOILEDEGG_BACKEND_REALTIME|
-            BOILEDEGG_BACKEND_DYNAMIC_PITCH|BOILEDEGG_BACKEND_DYNAMIC_FORMANT|BOILEDEGG_BACKEND_PARAMETER_EVENTS;
+            BOILEDEGG_BACKEND_DYNAMIC_PITCH|BOILEDEGG_BACKEND_DYNAMIC_FORMANT|BOILEDEGG_BACKEND_PARAMETER_EVENTS|
+            BOILEDEGG_BACKEND_DYNAMIC_TIME|BOILEDEGG_BACKEND_EXPLICIT_RAMPS;
         info.quality_mode_mask=(1u<<BOILEDEGG_QUALITY_GENERAL)|(1u<<BOILEDEGG_QUALITY_TRANSIENT);
         info.formant_policy_mask=7;
         info.min_sample_rate=44100;info.max_sample_rate=96000;
@@ -177,7 +208,7 @@ boiledegg_result boiledegg_validate_backend_config(const boiledegg_config* c,con
     if (!c || c->struct_size<sizeof(*c) || !b || b->struct_size<sizeof(*b)) return BOILEDEGG_INVALID_ARGUMENT;
     if (!valid_audio(*c) || b->version!=BOILEDEGG_BACKEND_API_VERSION || b->backend_id>BOILEDEGG_BACKEND_PHASE_VOCODER ||
         b->quality_mode>BOILEDEGG_QUALITY_MONOPHONIC || b->formant_policy>BOILEDEGG_FORMANT_POLICY_MONOPHONIC ||
-        b->io_contract>BOILEDEGG_IO_REALTIME || (b->flags & ~(BOILEDEGG_BACKEND_ALLOW_EXPERIMENTAL|BOILEDEGG_BACKEND_CONTINUOUS_PITCH)) ||
+        b->io_contract>BOILEDEGG_IO_REALTIME || (b->flags & ~(BOILEDEGG_BACKEND_ALLOW_EXPERIMENTAL|BOILEDEGG_BACKEND_CONTINUOUS_PITCH|BOILEDEGG_BACKEND_CONTINUOUS_TIME)) ||
         b->reserved[0] || b->reserved[1] || !ratio(b->initial_time_ratio,.25f,4.0f) ||
         !ratio(b->initial_pitch_ratio,.25f,4.0f) || !ratio(b->initial_formant_ratio,.5f,2.0f)) return BOILEDEGG_INVALID_ARGUMENT;
     boiledegg_backend_info info{}; info.struct_size=sizeof(info);
@@ -187,6 +218,10 @@ boiledegg_result boiledegg_validate_backend_config(const boiledegg_config* c,con
         !(info.quality_mode_mask&(1u<<b->quality_mode)) || !(info.formant_policy_mask&(1u<<b->formant_policy)) ||
         (b->formant_policy==BOILEDEGG_FORMANT_POLICY_OFF && b->initial_formant_ratio!=1.0f) ||
         (b->io_contract==BOILEDEGG_IO_REALTIME && b->initial_time_ratio!=1.0f)) return BOILEDEGG_UNSUPPORTED_MODE;
+    if(b->flags&BOILEDEGG_BACKEND_CONTINUOUS_TIME) {
+        if(b->backend_id!=BOILEDEGG_BACKEND_PHASE_VOCODER || b->io_contract!=BOILEDEGG_IO_STREAMING ||
+           !(b->flags&BOILEDEGG_BACKEND_CONTINUOUS_PITCH))return BOILEDEGG_UNSUPPORTED_MODE;
+    }
     if(b->backend_id==BOILEDEGG_BACKEND_PHASE_VOCODER){
         if((c->sample_rate!=44100 && c->sample_rate!=48000 && c->sample_rate!=88200 && c->sample_rate!=96000) ||
             c->channels>2 || c->max_block_size>1024 || b->io_contract==BOILEDEGG_IO_AUTO ||

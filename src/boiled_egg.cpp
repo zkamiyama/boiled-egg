@@ -98,8 +98,10 @@ bool enter_mode(boiledegg_handle* h, processing_mode desired) noexcept {
 }
 
 inline void sync_requested_parameters_streaming(boiledegg_handle* h) noexcept {
-    (void)h->engine.set_time_ratio(load_ratio(h->requested_time_ratio_bits));
-    (void)h->engine.set_pitch_ratio(load_ratio(h->requested_pitch_ratio_bits));
+    if(!(h->backend.flags&BOILEDEGG_BACKEND_CONTINUOUS_TIME)) {
+        (void)h->engine.set_time_ratio(load_ratio(h->requested_time_ratio_bits));
+        (void)h->engine.set_pitch_ratio(load_ratio(h->requested_pitch_ratio_bits));
+    }
     (void)h->engine.set_formant_ratio(load_ratio(h->requested_formant_ratio_bits));
 }
 
@@ -138,6 +140,11 @@ bool valid_planar_output(const boiledegg_handle* h, float* const* output) noexce
 
 boiledegg_result validate_parameter_value(const boiledegg_handle* h,uint32_t parameter_id, float value, bool fixed_realtime) noexcept {
     if (!std::isfinite(value)) return BOILEDEGG_INVALID_ARGUMENT;
+    // A variable-time handle validates coupled trajectories on its audio owner.
+    // Uncoupled UI setters cannot safely change either clock concurrently.
+    if((h->backend.flags&BOILEDEGG_BACKEND_CONTINUOUS_TIME) &&
+       (parameter_id==BOILEDEGG_PARAMETER_TIME_RATIO || parameter_id==BOILEDEGG_PARAMETER_PITCH_RATIO ||
+        parameter_id==BOILEDEGG_PARAMETER_PITCH_SEMITONES))return BOILEDEGG_UNSUPPORTED_MODE;
     if(h->backend.backend_id==BOILEDEGG_BACKEND_PHASE_VOCODER){
         if(parameter_id==BOILEDEGG_PARAMETER_TIME_RATIO || parameter_id==BOILEDEGG_PARAMETER_PITCH_RATIO || parameter_id==BOILEDEGG_PARAMETER_PITCH_SEMITONES){
             if(parameter_id==BOILEDEGG_PARAMETER_PITCH_SEMITONES && (value < -24.f || value > 24.f))return BOILEDEGG_INVALID_ARGUMENT;
@@ -603,6 +610,7 @@ boiledegg_result boiledegg_get_backend_configuration(const boiledegg_handle* h,b
     if (!h || !out || out->struct_size<sizeof(*out)) return BOILEDEGG_INVALID_ARGUMENT;
     *out=h->backend; out->struct_size=sizeof(*out); return BOILEDEGG_OK;
 }
+#include "automation_api.inc"
 } // extern C
 namespace boiled_egg::detail {
 boiledegg_handle* create_selected_backend(const boiledegg_config& c,

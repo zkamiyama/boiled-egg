@@ -2,6 +2,7 @@
 
 #include <boiled_egg/boiled_egg.h>
 #include <boiled_egg/backend.h>
+#include <boiled_egg/automation.h>
 #include <span>
 #include <stdexcept>
 #include <utility>
@@ -174,6 +175,25 @@ public:
         check(process_realtime_nothrow(input, output, frames, events));
     }
 
+    boiledegg_result process_realtime_ramps_nothrow(const float* const* input,float* const* output,
+        uint32_t frames,std::span<const boiledegg_ramp_event> events={}) noexcept {
+        if(events.size()>BOILEDEGG_MAX_RAMP_EVENTS)return BOILEDEGG_INVALID_ARGUMENT;
+        return boiledegg_process_realtime_ramps(handle_,input,output,frames,events.data(),static_cast<uint32_t>(events.size()));
+    }
+    void process_realtime_ramps(const float* const* input,float* const* output,uint32_t frames,
+        std::span<const boiledegg_ramp_event> events={}) {
+        check(process_realtime_ramps_nothrow(input,output,frames,events));
+    }
+    uint32_t push_ramps(const float* const* input,uint32_t frames,std::span<const boiledegg_ramp_event> events={}) {
+        if(events.size()>BOILEDEGG_MAX_RAMP_EVENTS)throw error(BOILEDEGG_INVALID_ARGUMENT);
+        uint32_t accepted=0;
+        check(boiledegg_push_ramps(handle_,input,frames,events.data(),static_cast<uint32_t>(events.size()),&accepted),true);
+        return accepted;
+    }
+    boiledegg_automation_info automation_info() const {
+        boiledegg_automation_info info{};info.struct_size=sizeof(info);
+        check(boiledegg_get_automation_info(handle_,&info));return info;
+    }
     boiledegg_handle* native_handle() noexcept { return handle_; }
     const boiledegg_handle* native_handle() const noexcept { return handle_; }
 

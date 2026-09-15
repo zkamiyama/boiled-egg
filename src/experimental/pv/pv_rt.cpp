@@ -159,6 +159,7 @@ public:
         timeline_.prepare(input_capacity_,sample_rate_,time_ratio_,pitch_ratio_,formant_ratio_);
         timeline_rotation_.assign(bins_,0.f);timeline_predicted_.assign(bins_,0.f);
     }
+#include "pv_automation.inc"
     static bool valid(const boiledegg_research_pv_rt_config& c) noexcept {
         return c.struct_size >= sizeof(boiledegg_research_pv_rt_config) &&
                c.abi_version == BOILEDEGG_RESEARCH_PV_RT_ABI_VERSION &&
@@ -181,6 +182,8 @@ public:
         completed_frames_=frame_overruns_=max_frame_steps_=current_steps_=0;
         fuzzy_.reset();
         timeline_.reset(pitch_ratio_,formant_ratio_);
+        explicit_automation_=false;
+        output_source_index_=0;
         std::fill(timeline_rotation_.begin(),timeline_rotation_.end(),0.f);
         smoothed_formant_ratio_ = formant_ratio_;
         std::fill(input_.begin(), input_.end(), 0.0F);
@@ -272,6 +275,7 @@ public:
             if(timeline_.enabled()) {
                 if(!append_timeline())return BOILEDEGG_RESEARCH_PV_RT_INTERNAL_ERROR;
                 expected_pv_frames_=timeline_.end_position();
+                expected_output_frames_=timeline_.end_output();
             } else expected_pv_frames_ += internal_stretch();
             if (scheduled_) { if (!tick()) return BOILEDEGG_RESEARCH_PV_RT_INTERNAL_ERROR; }
             else process_available();
@@ -354,9 +358,9 @@ private:
     }
     [[nodiscard]] float frame_pitch() const noexcept {return timeline_.enabled()?frame_pitch_:pitch_ratio_;}
     bool append_timeline() noexcept {
-        const auto output_input=static_cast<std::uint64_t>(static_cast<double>(emitted_frames_)/time_ratio_);
+        const auto output_input=variable_time_?output_source_index_:static_cast<std::uint64_t>(static_cast<double>(emitted_frames_)/time_ratio_);
         if(!timeline_.can_append(std::min(analysis_start_,output_input)))return false;
-        timeline_.append(formant_ratio_);return true;
+        timeline_.append(formant_ratio_,!flushed_ || !explicit_automation_);return true;
     }
     void timeline_predict(std::uint32_t k,float synthesis_hop) noexcept {
         std::uint32_t reference=0;
@@ -766,7 +770,22 @@ private:
             static_cast<std::uint64_t>(std::floor(std::max(0.0,expected_output_frames_)));
         std::uint32_t budget=(scheduled_ && !flushed_)?2U:std::numeric_limits<std::uint32_t>::max();
         while(emitted_frames_<output_limit && fifo_count_<fifo_capacity_ && budget--) {
-            const double u=static_cast<double>(emitted_frames_)/time_ratio_;
+            double u=static_cast<double>(emitted_frames_)/time_ratio_;
+            if(variable_time_) {
+                // W is monotone, T>=.5. Between adjacent output samples its
+                // inverse moves by at most two input cells. Four iterations
+                // include the endpoint/tie checks; no length-dependent search.
+                for(unsigned step=0;step<4;++step) {
+                    if(!timeline_.contains(output_source_index_+1U))return;
+                    if(timeline_.at(output_source_index_+1U).output>static_cast<double>(emitted_frames_))break;
+                    ++output_source_index_;
+                }
+                if(!timeline_.contains(output_source_index_+1U))return;
+                const auto a=timeline_.at(output_source_index_),b=timeline_.at(output_source_index_+1U);
+                const double fraction=(static_cast<double>(emitted_frames_)-a.output)/(b.output-a.output);
+                if(fraction<0. || fraction>=1.)return;
+                u=static_cast<double>(output_source_index_)+fraction;
+            }
             const auto ui=static_cast<std::uint64_t>(u);
             if(!timeline_.contains(ui) || (u!=static_cast<double>(ui) && !timeline_.contains(ui+1U)))return;
             const double position=timeline_.position(u);
@@ -801,6 +820,8 @@ public:
     }
 private:
     pitch_timeline timeline_;
+    bool explicit_automation_{},variable_time_{};
+    std::uint64_t output_source_index_{};
     std::vector<float> timeline_rotation_,timeline_predicted_;
     float frame_pitch_{1.0F};
     bool scheduled_{}, simd_{}, frame_active_{};
@@ -839,6 +860,18 @@ private:
 struct boiledegg_research_pv_rt_handle { boiled_egg::research::detail::engine* engine{}; };
 
 extern "C" {
+boiledegg_result boiledegg_private_pv_enable_time(boiledegg_research_pv_rt_handle* h) {
+    return (!h||!h->engine)?BOILEDEGG_INVALID_ARGUMENT:h->engine->enable_time_automation();
+}
+boiledegg_result boiledegg_private_pv_validate_ramps(const boiledegg_research_pv_rt_handle* h,const boiledegg_ramp_event* e,uint32_t count,uint32_t frames,float pitch) {
+    return (!h || !h->engine)?BOILEDEGG_INVALID_ARGUMENT:h->engine->validate_ramps(e,count,frames,pitch);
+}
+boiledegg_result boiledegg_private_pv_apply_ramp(boiledegg_research_pv_rt_handle* h,const boiledegg_ramp_event* e) {
+    return (!h || !h->engine || !e)?BOILEDEGG_INVALID_ARGUMENT:h->engine->apply_ramp(*e);
+}
+boiledegg_result boiledegg_private_pv_automation_info(const boiledegg_research_pv_rt_handle* h,boiledegg_automation_info* out) {
+    return (!h || !h->engine || !out)?BOILEDEGG_INVALID_ARGUMENT:h->engine->automation_info(*out);
+}
 boiledegg_research_pv_rt_config boiledegg_research_pv_rt_default_config(uint32_t sample_rate, uint32_t channels, uint32_t max_block_frames) {
     boiledegg_research_pv_rt_config c{};
     c.struct_size = sizeof(c);

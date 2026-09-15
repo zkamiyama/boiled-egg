@@ -1,6 +1,7 @@
 #ifndef BOILED_EGG_RESEARCH_EXECUTION_H
 #define BOILED_EGG_RESEARCH_EXECUTION_H
 #include "boiled_egg_research_features.h"
+#include <boiled_egg/automation.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -35,6 +36,10 @@ boiledegg_research_pv_rt_handle* boiledegg_research_pv_rt_create_exec(
 boiledegg_research_multires_rt_handle* boiledegg_research_multires_rt_create_exec(
     const boiledegg_research_multires_rt_config*, const boiledegg_research_features*,
     const boiledegg_research_execution*, boiledegg_research_pv_rt_result*);
+boiledegg_result boiledegg_private_pv_enable_time(boiledegg_research_pv_rt_handle*);
+boiledegg_result boiledegg_private_pv_validate_ramps(const boiledegg_research_pv_rt_handle*,const boiledegg_ramp_event*,uint32_t,uint32_t,float);
+boiledegg_result boiledegg_private_pv_apply_ramp(boiledegg_research_pv_rt_handle*,const boiledegg_ramp_event*);
+boiledegg_result boiledegg_private_pv_automation_info(const boiledegg_research_pv_rt_handle*,boiledegg_automation_info*);
 /* Single-owner snapshots; unlike the later host mailbox these are not UI calls. */
 boiledegg_research_pv_rt_result boiledegg_research_pv_rt_execution_stats(
     const boiledegg_research_pv_rt_handle*, boiledegg_research_execution_stats*);

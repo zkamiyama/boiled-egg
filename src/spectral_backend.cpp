@@ -38,6 +38,13 @@ SpectralBackend::SpectralBackend(const boiledegg_config& c,const boiledegg_backe
             throw BackendConstructionError{translate(enabled)};
         }
     }
+    if(b.flags&BOILEDEGG_BACKEND_CONTINUOUS_TIME) {
+        const auto status=boiledegg_private_pv_enable_time(handle_);
+        if(status!=BOILEDEGG_OK) {
+            boiledegg_research_pv_rt_destroy(handle_);handle_=nullptr;
+            throw BackendConstructionError{status};
+        }
+    }
     const uint32_t scale=c.sample_rate>48000?2u:1u;
     fft_=pv.fft_size*scale;hop_=pv.analysis_hop*scale;
     latency_=boiled_egg::research::detail::compact_host_latency(scale,
@@ -99,4 +106,20 @@ boiledegg_result SpectralBackend::flush() noexcept {
     if(r==BOILEDEGG_OK)flushed_=true;else fault_=true;
     return r;
 }
+}
+
+namespace boiled_egg::detail {
+boiledegg_result SpectralBackend::validate_ramps(const boiledegg_ramp_event* e,uint32_t n,uint32_t frames,float pitch) const noexcept {
+    if(!(backend_.flags&BOILEDEGG_BACKEND_CONTINUOUS_PITCH))return BOILEDEGG_UNSUPPORTED_MODE;
+    if(fault_)return BOILEDEGG_INVALID_STATE;
+    if(flushed_)return BOILEDEGG_END_OF_STREAM;
+    return boiledegg_private_pv_validate_ramps(handle_,e,n,frames,pitch);
+}
+boiledegg_result SpectralBackend::apply_ramp(const boiledegg_ramp_event& e) noexcept {
+    return boiledegg_private_pv_apply_ramp(handle_,&e);
+}
+boiledegg_result SpectralBackend::automation_info(boiledegg_automation_info& i) const noexcept {
+    return boiledegg_private_pv_automation_info(handle_,&i);
+}
+bool SpectralBackend::can_accept_ramp_sample() const noexcept {return !fault_&&!flushed_&&available()<32768u;}
 }

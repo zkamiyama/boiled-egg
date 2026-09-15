@@ -1,61 +1,72 @@
 #ifndef BOILED_EGG_PRIVATE_PITCH_TIMELINE_HPP
 #define BOILED_EGG_PRIVATE_PITCH_TIMELINE_HPP
+#include "automation_curve.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
-
 namespace boiled_egg::research::detail {
-// Source-clock map V(u)=integral(time_ratio*pitch(u),du). Both frame placement
-// and resampler lookup use this SAME map, never the control value at callback
-// execution time. Storage is allocated at construction; append/read are bounded.
-// A target step ramps linearly in ratio over 10ms of INPUT, independent of host
-// block partition. No instantaneous jump in position and no ring of UI events.
+// Preallocated source-clock map. Position is V(u)=sum(T*p) and output is
+// W(u)=sum(T). Samples use the post-tick effective control (right endpoint).
 class pitch_timeline {
 public:
-    struct node { double position{}; float pitch{1.0F},formant{1.0F}; };
+    struct node {double position{};float pitch{1},formant{1};double output{};};
     void prepare(std::size_t capacity,std::uint32_t rate,float time,float pitch,float formant) {
-        nodes_.resize(capacity);ramp_frames_=std::max(1U,rate/100U);time_=time;reset(pitch,formant);
+        nodes_.resize(capacity);ramp_frames_=std::max(1U,rate/100U);
+        plan_.time.reset(time);reset(pitch,formant);
     }
-    [[nodiscard]] bool enabled() const noexcept { return !nodes_.empty(); }
+    [[nodiscard]] bool enabled() const noexcept {return !nodes_.empty();}
     void reset(float pitch,float formant) noexcept {
-        written_=0;position_=0;pitch_=target_=pitch;step_=0;remaining_=0;
-        if(enabled())nodes_[0]={0,pitch,formant};
+        written_=0;position_=output_=0;position_error_=output_error_=0;precise_clock_=false;plan_.pitch.reset(pitch);
+        plan_.time.reset(plan_.time.target);
+        if(enabled())nodes_[0]={0,pitch,formant,0};
     }
     void target(float pitch) noexcept {
-        if(target_==pitch)return;
-        target_=pitch;
-        if(!written_){pitch_=target_;step_=0;remaining_=0;return;}
-        remaining_=ramp_frames_;step_=(target_-pitch_)/static_cast<double>(remaining_);
+        if(plan_.pitch.target==pitch)return;
+        plan_.pitch.start(pitch,written_?ramp_frames_:0U,0);
     }
+    void ramp(float value,std::uint32_t frames,std::uint32_t curve) noexcept {plan_.pitch.start(value,frames,curve,true);precise_clock_=true;}
+    void time_ramp(float value,std::uint32_t frames,std::uint32_t curve) noexcept {plan_.time.start(value,frames,curve,true);precise_clock_=true;}
+    [[nodiscard]] double effective_pitch() const noexcept {return plan_.pitch.value;}
+    [[nodiscard]] std::uint32_t remaining() const noexcept {return plan_.pitch.remaining;}
+    [[nodiscard]] const automation_plan& plan() const noexcept {return plan_;}
     [[nodiscard]] bool can_append(std::uint64_t oldest) const noexcept {
-        return written_+1U-oldest<nodes_.size();
+        return oldest<=written_ && written_+1U-oldest<nodes_.size();
     }
-    void append(float formant) noexcept {
-        if(remaining_){pitch_=remaining_==1?target_:pitch_+step_;--remaining_;}
-        auto& current=nodes_[static_cast<std::size_t>(written_%nodes_.size())];
-        current={position_,static_cast<float>(pitch_),formant};
-        position_+=time_*pitch_;++written_;
-        nodes_[static_cast<std::size_t>(written_%nodes_.size())]={position_,static_cast<float>(pitch_),formant};
+    void append(float formant,bool advance=true) noexcept {
+        if(advance){plan_.pitch.tick();plan_.time.tick();}
+        nodes_[static_cast<std::size_t>(written_%nodes_.size())]=
+            {position_,static_cast<float>(plan_.pitch.value),formant,output_};
+        if(precise_clock_) {
+            // Compensate accumulation on explicit trajectories. Do not change
+            // the pre-existing unflagged/default 10-ms pitch arithmetic.
+            const double dp=plan_.time.value*plan_.pitch.value-position_error_;
+            const double next_position=position_+dp;position_error_=(next_position-position_)-dp;position_=next_position;
+            const double dw=plan_.time.value-output_error_;
+            const double next_output=output_+dw;output_error_=(next_output-output_)-dw;output_=next_output;
+        }else {position_+=plan_.time.value*plan_.pitch.value;output_+=plan_.time.value;}
+        ++written_;
+        nodes_[static_cast<std::size_t>(written_%nodes_.size())]=
+            {position_,static_cast<float>(plan_.pitch.value),formant,output_};
     }
-    [[nodiscard]] bool contains(std::uint64_t i) const noexcept {
-        return i<=written_ && written_-i<nodes_.size();
-    }
-    [[nodiscard]] node at(std::uint64_t i) const noexcept { return nodes_[static_cast<std::size_t>(i%nodes_.size())]; }
+    [[nodiscard]] bool contains(std::uint64_t i) const noexcept {return i<=written_ && written_-i<nodes_.size();}
+    [[nodiscard]] node at(std::uint64_t i) const noexcept {return nodes_[static_cast<std::size_t>(i%nodes_.size())];}
     [[nodiscard]] double position(double input) const noexcept {
         const auto i=static_cast<std::uint64_t>(input);const auto a=at(i);
-        // At an integer no future control or sample is needed.
         const double fraction=input-static_cast<double>(i);
         return fraction==0?a.position:a.position+fraction*(at(i+1U).position-a.position);
     }
-    [[nodiscard]] double end_position() const noexcept { return position_; }
-    [[nodiscard]] std::uint64_t written() const noexcept { return written_; }
+    [[nodiscard]] double end_position() const noexcept {return position_;}
+    [[nodiscard]] double end_output() const noexcept {return output_;}
+    [[nodiscard]] std::uint64_t written() const noexcept {return written_;}
 private:
     std::vector<node> nodes_;
     std::uint64_t written_{};
-    std::uint32_t ramp_frames_{1},remaining_{};
-    double position_{},pitch_{1},target_{1},step_{},time_{1};
+    std::uint32_t ramp_frames_{1};
+    double position_{},output_{},position_error_{},output_error_{};
+    bool precise_clock_{};
+    automation_plan plan_;
 };
 }
 #endif
