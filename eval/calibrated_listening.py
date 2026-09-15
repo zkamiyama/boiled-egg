@@ -160,6 +160,9 @@ def make_pack(root: Path, calibration: Path, output: Path, seed: int=260915) -> 
                     presentation='one common peak-safe attenuation per trial; no per-candidate normalization or alignment')
         c.json_write(private/'summary.json',report)
         verify_panel(root,calibration)  # Recheck immutable raw evidence after presentation creation.
+        from listening_results import seal_pack, verify_pack
+        seal_pack(stage)
+        verify_pack(stage)
         stage.rename(output)
     return report
 
