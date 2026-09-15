@@ -1,0 +1,73 @@
+name: research-transient-kernel
+on:
+  push:
+    paths: ['research/transient_transport/**', 'research/phase_gradient/**', '.github/workflows/research-transient-kernel.yml']
+  pull_request:
+    paths: ['research/transient_transport/**', 'research/phase_gradient/**', '.github/workflows/research-transient-kernel.yml']
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+defaults:
+  run:
+    shell: bash
+jobs:
+  kernel:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        standard: [20, 23]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build and independent numerical tests
+        env:
+          COMPILER: ${{ matrix.compiler }}
+          STANDARD: ${{ matrix.standard }}
+        run: |
+          mkdir validation
+          if test "$COMPILER" = clang; then export CXX=clang++; else export CXX=g++; fi
+          cmake -S research/transient_transport -B build-transport -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD="$STANDARD"
+          cmake --build build-transport -j2
+          ctest --test-dir build-transport --output-on-failure | tee validation/ctest.log
+          build-transport/transient_map_test | tee validation/map.log
+          build-transport/phase_heap_test | tee validation/heap.log
+      - name: Source provenance
+        if: always()
+        run: |
+          mkdir -p validation
+          git rev-parse HEAD > validation/COMMIT.txt
+          git rev-parse HEAD^{tree} > validation/TREE.txt
+          git archive --format=tar.gz --prefix=boiled-egg/ HEAD > validation/source.tar.gz
+          git ls-files -z | xargs -0 sha256sum > validation/SOURCE_SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: transient-kernel-${{ matrix.compiler }}-${{ matrix.standard }}-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7
+  sanitizer:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Address and undefined behavior checks
+        run: |
+          mkdir validation
+          cmake -S research/transient_transport -B build-san -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_CXX_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer'
+          cmake --build build-san -j2
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 ctest --test-dir build-san --output-on-failure | tee validation/sanitizer.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: transient-kernel-sanitizer-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7
