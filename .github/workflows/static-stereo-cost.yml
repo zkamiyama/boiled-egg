@@ -1,0 +1,143 @@
+name: static-stereo-cost
+on:
+  push:
+    paths: ['quality/objective_audio/**', '.github/workflows/static-stereo-cost.yml']
+  pull_request:
+    paths: ['quality/objective_audio/**', '.github/workflows/static-stereo-cost.yml']
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  OPENBLAS_NUM_THREADS: 1
+  OMP_NUM_THREADS: 1
+jobs:
+  correctness:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        standard: [20, 23]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: zkamiyama/boiled-egg
+          ref: f8e5ef2cbce84f396597860a408b4a3084796115
+          path: .pv-original
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Prepare separate immutable implementations
+        run: |
+          mkdir validation
+          cp -a .pv-original .pv-pooled
+          cp -a .pv-original .pv-optimized
+          git -C .pv-pooled apply "$PWD/quality/objective_audio/pooled_static_stereo.patch"
+          git -C .pv-optimized apply "$PWD/quality/objective_audio/pooled_static_stereo.patch"
+          git -C .pv-optimized apply "$PWD/quality/objective_audio/static_stereo_cost.patch"
+          git -C .pv-optimized diff --binary > validation/optimized.patch
+          (cd .pv-optimized && git ls-files -z | xargs -0 sha256sum) > validation/OPTIMIZED_SOURCE_SHA256SUMS
+      - name: Full SDK checks and exact matched output replay
+        env:
+          COMPILER: ${{ matrix.compiler }}
+          STANDARD: ${{ matrix.standard }}
+        run: |
+          if test "$COMPILER" = clang; then export CC=clang CXX=clang++; else export CC=gcc CXX=g++; fi
+          python -m pip install numpy==2.3.5 scipy==1.17.0 soundfile==0.13.1
+          for role in pooled optimized; do
+            cmake -S ".pv-$role" -B "build-$role" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_CXX_STANDARD="$STANDARD" -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON
+            cmake --build "build-$role" -j2
+            ctest --test-dir "build-$role" --output-on-failure | tee "validation/ctest-$role.log"
+            "$CXX" -O2 -std=c++"$STANDARD" quality/objective_audio/cost_replay.cpp \
+              -I".pv-$role/include" -L"build-$role" -Wl,-rpath,"$PWD/build-$role" \
+              -lboiled_egg -o "build-$role/cost-replay"
+            "build-$role/cost-replay" > "validation/replay-$role.csv"
+            sha256sum "build-$role/libboiled_egg.so" "build-$role/cost-replay" > "validation/BINARIES-$role.txt"
+          done
+          cmp validation/replay-pooled.csv validation/replay-optimized.csv
+          python -W error::ResourceWarning -m unittest discover -s quality/objective_audio -p 'test_*.py' -v 2>&1 | tee validation/python.log
+      - name: Three implementations, all 72 cost cells, retained raw tails
+        if: matrix.compiler == 'gcc' && matrix.standard == 20
+        run: |
+          cmake -S .pv-original -B build-original -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_STANDARD=20 -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON
+          cmake --build build-original --target boiled_egg -j2
+          for role in original pooled optimized; do
+            g++ -O2 -std=c++20 quality/objective_audio/static_capacity.cpp \
+              -I.pv-original/include -L"build-$role" -Wl,-rpath,"$PWD/build-$role" \
+              -lboiled_egg -o "build-$role/static-capacity"
+          done
+          mkdir validation/timing
+          cpu=$(python -c 'import os; print(min(os.sched_getaffinity(0)))')
+          for repeat in 1 2 3; do
+            case "$repeat" in
+              1) roles='original pooled optimized';;
+              2) roles='pooled optimized original';;
+              3) roles='optimized original pooled';;
+            esac
+            for pitch in 0.5 1 2; do
+              for role in $roles; do
+                taskset -c "$cpu" "build-$role/static-capacity" "$repeat" "$pitch" \
+                  > "validation/timing/$role-p$pitch-$repeat.csv"
+              done
+            done
+          done
+          python quality/objective_audio/cost_audit.py --results validation/timing \
+            --policy .pv-original/quality/dynamic_pitch/summarize_bench.py \
+            --output validation/cost.json | tee validation/cost.log
+      - name: Source provenance
+        if: always()
+        run: |
+          mkdir -p validation
+          git rev-parse HEAD > validation/COMMIT.txt
+          git rev-parse HEAD^{tree} > validation/TREE.txt
+          git archive --format=tar.gz --prefix=boiled-egg/ HEAD > validation/source.tar.gz
+          git ls-files -z | xargs -0 sha256sum > validation/SOURCE_SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stereo-cost-${{ matrix.compiler }}-${{ matrix.standard }}-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7
+  sanitizer:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: zkamiyama/boiled-egg
+          ref: f8e5ef2cbce84f396597860a408b4a3084796115
+          path: .pv-optimized
+          persist-credentials: false
+      - name: Instrument the actual optimized full SDK
+        run: |
+          mkdir validation
+          git -C .pv-optimized apply "$PWD/quality/objective_audio/pooled_static_stereo.patch"
+          git -C .pv-optimized apply "$PWD/quality/objective_audio/static_stereo_cost.patch"
+          cmake -S .pv-optimized -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON \
+            -DCMAKE_CXX_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer'
+          cmake --build build-asan -j2
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
+            ctest --test-dir build-asan --output-on-failure | tee validation/asan.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stereo-cost-sanitizer-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7
