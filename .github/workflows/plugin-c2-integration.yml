@@ -1,0 +1,121 @@
+name: plugin-c2-integration
+on:
+  push:
+    paths: ['adapters/**', 'cmake/PluginCommon.cmake', 'quality/plugin_c2/**', '.github/workflows/plugin-c2-integration.yml']
+  pull_request:
+    paths: ['adapters/**', 'cmake/PluginCommon.cmake', 'quality/plugin_c2/**', '.github/workflows/plugin-c2-integration.yml']
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  hosts:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {compiler: gcc, standard: 20, spectral: 'ON', ui: 'ON'}
+          - {compiler: clang, standard: 23, spectral: 'ON', ui: 'ON'}
+          - {compiler: gcc, standard: 23, spectral: 'OFF', ui: 'ON'}
+          - {compiler: clang, standard: 20, spectral: 'ON', ui: 'OFF'}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build both actual plugins and test the declared UI mode
+        env:
+          COMPILER: ${{ matrix.compiler }}
+          STANDARD: ${{ matrix.standard }}
+          SPECTRAL: ${{ matrix.spectral }}
+          UI: ${{ matrix.ui }}
+        run: |
+          mkdir validation
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxkbcommon-dev xvfb xauth
+          if test "$COMPILER" = clang; then export CC=clang CXX=clang++; else export CC=gcc CXX=g++; fi
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD="$STANDARD" \
+            -DBOILED_EGG_BUILD_SHARED=OFF -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL="$SPECTRAL" \
+            -DBOILED_EGG_BUILD_CLAP=ON -DBOILED_EGG_BUILD_VST3=ON -DBOILED_EGG_PLUGIN_UI="$UI"
+          cmake --build build -j2 2>&1 | tee validation/build.log
+          ctest --test-dir build -N | tee validation/test-list.log
+          if test "$UI" = ON; then
+            grep -q 'boiled_egg_clap_editor' validation/test-list.log
+            grep -q 'boiled_egg_vst3_editor_test' validation/test-list.log
+            grep -q 'boiled_egg_editor_interaction' validation/test-list.log
+          fi
+          ctest --test-dir build --output-on-failure 2>&1 | tee validation/tests.log
+          scripts/test_backend_install.sh build "$SPECTRAL" | tee validation/install.log
+          if ldd build/adapters/clap/boiled_egg.clap | grep -q 'libboiled_egg'; then exit 1; fi
+          if ldd 'build/VST3/Release/boiled egg.vst3/Contents/x86_64-linux/boiled_egg_vst3.so' | grep -q 'libboiled_egg'; then exit 1; fi
+      - name: Reproducible source and standalone packages
+        if: always()
+        run: |
+          mkdir -p validation
+          git rev-parse HEAD > validation/COMMIT.txt
+          git rev-parse HEAD^{tree} > validation/TREE.txt
+          git archive --format=tar.gz --prefix=boiled-egg/ HEAD > validation/source.tar.gz
+          git ls-files -z | xargs -0 sha256sum > validation/SOURCE_SHA256SUMS
+          if test -d build/_deps/clap_headers-src; then git -C build/_deps/clap_headers-src rev-parse HEAD > validation/CLAP_COMMIT.txt; fi
+          if test -d build/_deps/vst3sdk-src; then
+            git -C build/_deps/vst3sdk-src rev-parse HEAD > validation/VST3_COMMIT.txt
+            git -C build/_deps/vst3sdk-src submodule status --recursive > validation/VST3_SUBMODULES.txt
+          fi
+          if test -f build/adapters/clap/boiled_egg.clap && test -d 'build/VST3/Release/boiled egg.vst3'; then
+            tar -czf validation/plugins.tar.gz -C build adapters/clap/boiled_egg.clap 'VST3/Release/boiled egg.vst3'
+          fi
+      - name: Preserve pinned SDK sources for offline revalidation
+        if: matrix.compiler == 'gcc' && matrix.standard == 20
+        run: |
+          # Evaluation dependency archive; not copied into the product/repository.
+          tar --exclude='.git' -czf validation/host-sdk-sources.tar.gz -C build/_deps clap_headers-src vst3sdk-src
+          (cd build/_deps && find clap_headers-src vst3sdk-src -type f -not -path '*/.git/*' -not -name .git -print0 | sort -z | xargs -0 sha256sum) > validation/DEPENDENCY_SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: plugin-c2-${{ matrix.compiler }}-${{ matrix.standard }}-${{ matrix.spectral }}-${{ matrix.ui }}-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7
+  instruments:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [address, thread]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Instrument shared processor and GUI using the actual main SDK
+        env:
+          MODE: ${{ matrix.mode }}
+        run: |
+          mkdir validation
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev xvfb xauth
+          if test "$MODE" = address; then
+            options='-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DBOILED_EGG_SANITIZE=ON'
+          else
+            options='-DBOILED_EGG_THREAD_SANITIZE=ON -DBOILED_EGG_PLUGIN_UI=OFF'
+          fi
+          cmake -S quality/plugin_c2 -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON -DBOILED_EGG_BUILD_SHARED=OFF $options
+          cmake --build build -j2
+          export ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1
+          if test "$MODE" = thread; then
+            ctest --test-dir build -R '(plugin_threads|spectral_threads|ramp_threads)' --output-on-failure | tee validation/tests.log
+          else
+            ctest --test-dir build --output-on-failure | tee validation/tests.log
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: plugin-c2-${{ matrix.mode }}-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7

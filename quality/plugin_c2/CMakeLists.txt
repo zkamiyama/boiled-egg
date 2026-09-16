@@ -1,0 +1,10 @@
+cmake_minimum_required(VERSION 3.25)
+project(boiled_egg_plugin_c2_checks LANGUAGES C CXX)
+enable_testing()
+set(CMAKE_CXX_STANDARD 20 CACHE STRING "C++ standard")
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# The common processor/editor can be tested without downloading host SDKs.
+set(BOILED_EGG_BUILD_CLAP OFF CACHE BOOL "" FORCE)
+set(BOILED_EGG_BUILD_VST3 OFF CACHE BOOL "" FORCE)
+add_subdirectory(../.. sdk)
+include(../../cmake/PluginCommon.cmake)
