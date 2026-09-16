@@ -1,12 +1,11 @@
+include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/PluginCommon.cmake)
 if(CMAKE_VERSION VERSION_LESS 3.25)
   message(FATAL_ERROR "BOILED_EGG_BUILD_VST3 requires CMake 3.25+ (VST SDK 3.8 requirement)")
 endif()
 
 include(FetchContent)
 
-# VST SDK 3.8.0 (official Steinberg commit, 2025-10-20). Keep examples and
-# VSTGUI disabled; validator/moduleinfotool are still provided by the SDK and
-# are used automatically by smtg_add_vst3plugin when enabled.
+# VST SDK 3.8.0, pinned donor dependency. Validator is not disabled.
 set(SMTG_ENABLE_VST3_PLUGIN_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(SMTG_ENABLE_VST3_HOSTING_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(SMTG_ENABLE_VSTGUI_SUPPORT OFF CACHE BOOL "" FORCE)
@@ -28,10 +27,26 @@ set(boiled_egg_vst3_sources
   ${vst3sdk_SOURCE_DIR}/public.sdk/source/vst/vstsinglecomponenteffect.cpp
   ${vst3sdk_SOURCE_DIR}/public.sdk/source/vst/vstsinglecomponenteffect.h
 )
-
 smtg_add_vst3plugin(boiled_egg_vst3
   PACKAGE_NAME "boiled egg"
   SOURCES_LIST ${boiled_egg_vst3_sources}
 )
-target_link_libraries(boiled_egg_vst3 PRIVATE boiled_egg::boiled_egg sdk)
+target_link_libraries(boiled_egg_vst3 PRIVATE boiled_egg_plugin_common sdk)
 target_compile_features(boiled_egg_vst3 PRIVATE cxx_std_20)
+
+if(BOILED_EGG_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(boiled_egg_vst3_pitch_test test_vst3_pitch_ui.cpp
+    ${vst3sdk_SOURCE_DIR}/public.sdk/source/common/memorystream.cpp
+    ${vst3sdk_SOURCE_DIR}/public.sdk/source/vst/hosting/module.cpp
+    ${vst3sdk_SOURCE_DIR}/public.sdk/source/vst/hosting/module_linux.cpp)
+  target_link_libraries(boiled_egg_vst3_pitch_test PRIVATE boiled_egg_plugin_common sdk_hosting sdk ${CMAKE_DL_LIBS})
+  target_link_options(boiled_egg_vst3_pitch_test PRIVATE -Wl,--export-dynamic)
+  set(pitch_bundle "${CMAKE_BINARY_DIR}/VST3/Release/boiled egg.vst3")
+  add_test(NAME boiled_egg_vst3_pitch_test COMMAND boiled_egg_vst3_pitch_test "${pitch_bundle}")
+  if(BOILED_EGG_PLUGIN_HAS_UI)
+    find_program(XVFB_RUN xvfb-run)
+    if(XVFB_RUN)
+      add_test(NAME boiled_egg_vst3_editor_test COMMAND ${XVFB_RUN} -a $<TARGET_FILE:boiled_egg_vst3_pitch_test> "${pitch_bundle}" --ui)
+    endif()
+  endif()
+endif()
