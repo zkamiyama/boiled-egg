@@ -1,0 +1,162 @@
+name: integrated-static-stereo
+on:
+  push:
+    paths: ['src/**', 'include/**', 'cmake/**', 'tests/**', 'quality/objective_audio/**', '.github/workflows/integrated-static-stereo.yml']
+  pull_request:
+    paths: ['src/**', 'include/**', 'cmake/**', 'tests/**', 'quality/objective_audio/**', '.github/workflows/integrated-static-stereo.yml']
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  OPENBLAS_NUM_THREADS: 1
+  OMP_NUM_THREADS: 1
+jobs:
+  direct:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        standard: [20, 23]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build current source directly and run all regressions
+        env:
+          COMPILER: ${{ matrix.compiler }}
+          STANDARD: ${{ matrix.standard }}
+        run: |
+          mkdir validation
+          if test "$COMPILER" = clang; then export CC=clang CXX=clang++; else export CC=gcc CXX=g++; fi
+          python -m pip install numpy==2.3.5 scipy==1.17.0 soundfile==0.13.1
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_STANDARD="$STANDARD" -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON
+          cmake --build build -j2
+          ctest --test-dir build --output-on-failure | tee validation/ctest.log
+          build/boiled_egg_static_stereo_replay > validation/direct-replay.csv
+          python -W error::ResourceWarning -m unittest discover -s quality/objective_audio -p 'test_*.py' -v 2>&1 | tee validation/python.log
+          ./scripts/test_backend_install.sh build | tee validation/install.log
+      - uses: actions/checkout@v4
+        if: matrix.compiler == 'gcc' && matrix.standard == 20
+        with:
+          repository: zkamiyama/boiled-egg
+          ref: f8e5ef2cbce84f396597860a408b4a3084796115
+          path: .baseline
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        if: matrix.compiler == 'gcc' && matrix.standard == 20
+        with:
+          repository: zkamiyama/boiled-egg
+          ref: 894476d1c5a44cd0c2c9ff1cccb34e0fca792f5c
+          path: .audit
+          persist-credentials: false
+      - name: Canonical patch replay and original strict stereo audit
+        if: matrix.compiler == 'gcc' && matrix.standard == 20
+        run: |
+          cp -a .baseline .pooled
+          git -C .pooled apply "$PWD/quality/objective_audio/pooled_static_stereo.patch"
+          cp -a .pooled .expected
+          git -C .expected apply "$PWD/quality/objective_audio/static_stereo_cost.patch"
+          # The checked-out runtime is NOT patched here. Only comparison trees are.
+          cmake -S .pooled -B build-pooled -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON -DBOILED_EGG_BUILD_TESTS=OFF
+          cmake --build build-pooled --target boiled_egg -j2
+          g++ -O2 -std=c++20 quality/objective_audio/cost_replay.cpp -Iinclude \
+            -Lbuild-pooled -Wl,-rpath,"$PWD/build-pooled" -lboiled_egg -o build-pooled/replay
+          build-pooled/replay > validation/pooled-replay.csv
+          python quality/objective_audio/verify_integration.py \
+            --reference-source .expected --integrated-source . \
+            --reference-csv validation/pooled-replay.csv --integrated-csv validation/direct-replay.csv \
+            --output validation/integration.json
+          python .audit/eval/formant_audit/stereo_time.py --spectral "$PWD/build/boiled_egg_backend_cli" \
+            --output validation/stereo-time
+      - name: Unchanged practical capacity and cost budgets
+        if: matrix.compiler == 'gcc' && matrix.standard == 20
+        run: |
+          cmake -S .baseline -B build-original -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON -DBOILED_EGG_BUILD_TESTS=OFF
+          cmake --build build-original --target boiled_egg -j2
+          for pair in original:build-original pooled:build-pooled optimized:build; do
+            role=${pair%%:*}; dir=${pair#*:}
+            g++ -O2 -std=c++20 quality/objective_audio/static_capacity.cpp -Iinclude \
+              -L"$dir" -Wl,-rpath,"$PWD/$dir" -lboiled_egg -o "validation/bench-$role"
+          done
+          mkdir validation/timing
+          cpu=$(python -c 'import os; print(min(os.sched_getaffinity(0)))')
+          for repeat in 1 2 3; do
+            case "$repeat" in
+              1) roles='original pooled optimized';;
+              2) roles='pooled optimized original';;
+              3) roles='optimized original pooled';;
+            esac
+            for pitch in 0.5 1 2; do
+              for role in $roles; do
+                taskset -c "$cpu" "validation/bench-$role" "$repeat" "$pitch" > "validation/timing/$role-p$pitch-$repeat.csv"
+              done
+            done
+          done
+          python quality/objective_audio/cost_audit.py --results validation/timing \
+            --policy quality/dynamic_pitch/summarize_bench.py --output validation/cost.json | tee validation/cost.log
+      - name: Exact tested source identity
+        if: always()
+        run: |
+          mkdir -p validation
+          git rev-parse HEAD > validation/COMMIT.txt
+          git rev-parse HEAD^{tree} > validation/TREE.txt
+          git archive --format=tar.gz --prefix=boiled-egg/ HEAD > validation/source.tar.gz
+          git ls-files -z | xargs -0 sha256sum > validation/SOURCE_SHA256SUMS
+          if test -f build/libboiled_egg.so; then sha256sum build/libboiled_egg.so build/boiled_egg_backend_cli > validation/BINARY_SHA256SUMS; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integrated-stereo-${{ matrix.compiler }}-${{ matrix.standard }}-${{ github.sha }}
+          path: |
+            validation/
+            !validation/stereo-time/cases/**/output.wav
+          if-no-files-found: error
+          retention-days: 7
+  instrumented:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address, thread]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Instrument the integrated source, without a patch step
+        env:
+          SANITIZER: ${{ matrix.sanitizer }}
+        run: |
+          mkdir validation
+          if test "$SANITIZER" = address; then
+            opts='-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DBOILED_EGG_SANITIZE=ON'
+          else
+            opts='-DBOILED_EGG_THREAD_SANITIZE=ON'
+          fi
+          cmake -S . -B build-instrumented -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON $opts
+          cmake --build build-instrumented -j2
+          export ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1
+          if test "$SANITIZER" = address; then
+            ctest --test-dir build-instrumented --output-on-failure | tee validation/instrumented.log
+          else
+            ctest --test-dir build-instrumented -R 'boiled_egg_(spectral|ramp)_threads_test' --output-on-failure | tee validation/instrumented.log
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integrated-stereo-${{ matrix.sanitizer }}-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7
