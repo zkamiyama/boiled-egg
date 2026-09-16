@@ -67,3 +67,16 @@ if(BOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL AND BOILED_EGG_BUILD_BENCH AND CMAKE_
   add_executable(boiled_egg_explicit_ramp_bench quality/automation_ramps/bench.cpp)
   target_link_libraries(boiled_egg_explicit_ramp_bench PRIVATE boiled_egg::boiled_egg)
 endif()
+
+# Direct-checkout stereo gates; these do not build a separately patched dependency.
+if(BOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL AND BOILED_EGG_BUILD_TESTS)
+  add_executable(boiled_egg_static_stereo_test quality/objective_audio/spatial_regression.cpp)
+  target_link_libraries(boiled_egg_static_stereo_test PRIVATE boiled_egg::boiled_egg)
+  add_test(NAME boiled_egg_static_stereo_test COMMAND boiled_egg_static_stereo_test)
+  add_executable(boiled_egg_static_stereo_replay quality/objective_audio/cost_replay.cpp)
+  target_link_libraries(boiled_egg_static_stereo_replay PRIVATE boiled_egg::boiled_egg)
+  add_test(NAME boiled_egg_static_stereo_replay COMMAND boiled_egg_static_stereo_replay)
+  add_executable(boiled_egg_static_stereo_lifecycle tests/test_static_stereo_integration.cpp)
+  target_link_libraries(boiled_egg_static_stereo_lifecycle PRIVATE boiled_egg::boiled_egg)
+  add_test(NAME boiled_egg_static_stereo_lifecycle COMMAND boiled_egg_static_stereo_lifecycle)
+endif()

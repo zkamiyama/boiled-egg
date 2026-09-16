@@ -278,12 +278,17 @@ work_sequence frame_sequence() { for (;;) {
             mode_ == BOILEDEGG_RESEARCH_PV_RT_FUZZY, output_phase_.data());
             while (fuzzy_.advance_sliced()) co_yield true;
         }
+        const bool linked_static = channels_ > 1U && !fuzzy_mode && !timeline_.enabled();
+        if(linked_static) {
+            for(std::uint32_t k=0;k<bins_;++k){if((k&31U)==0U)co_yield true;linked_static_predict(k,synthesis_hop,transient);}
+            for(std::uint32_t k=0;k<bins_;++k){if((k&31U)==0U)co_yield true;linked_static_phase(k);}
+        }
         if(timeline_.enabled()) {
             for(std::uint32_t k=0;k<bins_;++k){if((k&31U)==0U)co_yield true;timeline_predict(k,synthesis_hop);}
             for(std::uint32_t k=0;k<bins_;++k){if((k&31U)==0U)co_yield true;timeline_phase(k);}
         }
         for (std::uint32_t ch = 0; ch < channels_; ++ch) {
-            if (!fuzzy_mode && !timeline_.enabled()) {
+            if (!fuzzy_mode && !timeline_.enabled() && !linked_static) {
                 for (std::uint32_t k = 0; k < bins_; ++k) {
                     if ((k & 31U) == 0U) co_yield true;
 
@@ -312,7 +317,10 @@ work_sequence frame_sequence() { for (;;) {
                 if ((k & 31U) == 0U) co_yield true;
 
                 const std::size_t idx = static_cast<std::size_t>(ch) * bins_ + k;
-                work[k] = std::polar(magnitude_[idx] * formant_gain_[k], output_phase_[idx]);
+                // Multiplication preserves the input complex channel vector; no
+                // per-channel polar reconstruction or independent phase history.
+                if(linked_static) work[k] *= linked_static_rotor_[k];
+                else work[k] = std::polar(magnitude_[idx] * formant_gain_[k], output_phase_[idx]);
             }
             for (std::uint32_t k = bins_; k < n_fft_; ++k) {
                 if ((k & 31U) == 0U) co_yield true;
@@ -343,7 +351,7 @@ work_sequence frame_sequence() { for (;;) {
         }
         for (std::size_t k=0; k<output_phase_.size(); ++k) {
             if ((k & 63U)==0U) co_yield true;
-            previous_output_phase_[k]=output_phase_[k];
+            if(!linked_static) previous_output_phase_[k]=output_phase_[k];
         }
         for (std::size_t k=0; k<linked_magnitude_.size(); ++k) {
             if ((k & 63U)==0U) co_yield true;
