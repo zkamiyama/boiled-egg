@@ -1,0 +1,171 @@
+name: sdk-preview-integration
+on:
+  push:
+    paths: ['src/**', 'include/**', 'cmake/**', 'tests/**', 'quality/sdk_preview/**', 'quality/objective_audio/**', 'CMakeLists.txt', '.github/workflows/sdk-preview-integration.yml']
+  pull_request:
+    paths: ['src/**', 'include/**', 'cmake/**', 'tests/**', 'quality/sdk_preview/**', 'quality/objective_audio/**', 'CMakeLists.txt', '.github/workflows/sdk-preview-integration.yml']
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  OPENBLAS_NUM_THREADS: 1
+  OMP_NUM_THREADS: 1
+jobs:
+  preview:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        standard: [20, 23]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build and test the direct SDK with preview ON
+        env:
+          COMPILER: ${{ matrix.compiler }}
+          STANDARD: ${{ matrix.standard }}
+        run: |
+          mkdir validation
+          if test "$COMPILER" = clang; then export CC=clang CXX=clang++; else export CC=gcc CXX=g++; fi
+          cmake -S . -B build-on -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_STANDARD="$STANDARD" -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON
+          cmake --build build-on -j2
+          ctest --test-dir build-on --output-on-failure | tee validation/ctest-on.log
+          scripts/check_exports.sh build-on/libboiled_egg.so
+          scripts/test_backend_install.sh build-on ON | tee validation/install-on.log
+          python -W error::ResourceWarning -m unittest discover -s quality/sdk_preview -p 'test_*.py' -v 2>&1 | tee validation/calibration.log
+          build-on/boiled_egg_static_stereo_replay > validation/current-preview.csv
+      - uses: actions/checkout@v4
+        if: matrix.compiler == 'gcc' && matrix.standard == 20
+        with:
+          repository: zkamiyama/boiled-egg
+          ref: da66001ea2381a938f227a36fe0319d0dc429945
+          path: .previous
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        if: matrix.compiler == 'gcc' && matrix.standard == 20
+        with:
+          repository: zkamiyama/boiled-egg
+          ref: bddc2eca9f0a2c9a801914df75dd34b76bed83e9
+          path: .donor
+          persist-credentials: false
+      - name: Execute unchanged old clients with three different SDK libraries
+        if: matrix.compiler == 'gcc' && matrix.standard == 20
+        run: |
+          cmake -S .previous -B build-previous -G Ninja -DCMAKE_BUILD_TYPE=Release -DBOILED_EGG_BUILD_TESTS=OFF
+          cmake --build build-previous --target boiled_egg -j2
+          cmake -S . -B build-off -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-off -j2
+          ctest --test-dir build-off --output-on-failure | tee validation/ctest-off.log
+          scripts/test_backend_install.sh build-off OFF | tee validation/install-off.log
+          cmake -S .donor -B build-donor -G Ninja -DCMAKE_BUILD_TYPE=Release -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON
+          cmake --build build-donor --target boiled_egg_static_stereo_replay -j2
+          build-donor/boiled_egg_static_stereo_replay > validation/donor-preview.csv
+          gcc -O2 -std=c11 quality/sdk_preview/legacy_client.c -I.previous/include \
+            -Lbuild-previous -Wl,-rpath,"$PWD/build-previous" -lboiled_egg -lm -o validation/legacy-c
+          g++ -O2 -std=c++20 quality/sdk_preview/legacy_wrapper.cpp -I.previous/include \
+            -Lbuild-previous -Wl,-rpath,"$PWD/build-previous" -lboiled_egg -o validation/legacy-cpp
+          python quality/sdk_preview/audit.py \
+            --baseline-source .previous --donor-source .donor --source . \
+            --original-library build-previous/libboiled_egg.so \
+            --off-library build-off/libboiled_egg.so --on-library build-on/libboiled_egg.so \
+            --c-client validation/legacy-c --cpp-client validation/legacy-cpp \
+            --donor-replay validation/donor-preview.csv --candidate-replay validation/current-preview.csv \
+            --output validation/compatibility | tee validation/compatibility.log
+      - name: Exact source identity
+        if: always()
+        run: |
+          mkdir -p validation
+          git rev-parse HEAD > validation/COMMIT.txt
+          git rev-parse HEAD^{tree} > validation/TREE.txt
+          git archive --format=tar.gz --prefix=boiled-egg/ HEAD > validation/source.tar.gz
+          git ls-files -z | xargs -0 sha256sum > validation/SOURCE_SHA256SUMS
+          if test -f build-on/libboiled_egg.so; then sha256sum build-on/libboiled_egg.so > validation/BINARY_SHA256SUMS; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sdk-preview-${{ matrix.compiler }}-${{ matrix.standard }}-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7
+  instrumentation:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [address, thread, static]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Direct preview instrumentation or static install
+        env:
+          MODE: ${{ matrix.mode }}
+        run: |
+          mkdir validation
+          case "$MODE" in
+            address) options='-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DBOILED_EGG_SANITIZE=ON';;
+            thread) options='-DBOILED_EGG_THREAD_SANITIZE=ON';;
+            static) options='-DBOILED_EGG_BUILD_SHARED=OFF';;
+          esac
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON $options
+          cmake --build build -j2
+          export ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1
+          if test "$MODE" = thread; then
+            ctest --test-dir build -R 'boiled_egg_(threading|daw_host|spectral_threads|ramp_threads)_test' --output-on-failure | tee validation/tests.log
+          else
+            ctest --test-dir build --output-on-failure | tee validation/tests.log
+          fi
+          if test "$MODE" = static; then scripts/test_backend_install.sh build ON | tee validation/install.log; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sdk-preview-${{ matrix.mode }}-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7
+  existing-adapters-preview-on:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        adapter: [CLAP, VST3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build the UNCHANGED main adapter with the expanded SDK
+        env:
+          ADAPTER: ${{ matrix.adapter }}
+        run: |
+          mkdir validation
+          options='-DBOILED_EGG_BUILD_TESTS=ON'
+          if test "$ADAPTER" = VST3; then options='-DBOILED_EGG_BUILD_TESTS=OFF'; fi
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DBOILED_EGG_BUILD_SHARED=OFF -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON \
+            -DBOILED_EGG_BUILD_TOOLS=OFF -DBOILED_EGG_BUILD_BENCH=OFF \
+            -DBOILED_EGG_BUILD_${ADAPTER}=ON $options
+          if test "$ADAPTER" = CLAP; then
+            cmake --build build -j2 | tee validation/build.log
+            ctest --test-dir build -R boiled_egg_clap_smoke --output-on-failure | tee validation/host.log
+          else
+            cmake --build build --target boiled_egg_vst3 -j2 | tee validation/build.log
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sdk-preview-adapter-${{ matrix.adapter }}-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7
