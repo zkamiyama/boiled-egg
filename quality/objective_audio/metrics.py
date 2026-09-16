@@ -47,8 +47,9 @@ Compute the orthogonal residual directly instead of subtracting nearly equal
 squared norms. This remains accurate around float32 noise floors.
     """
     a=np.asarray(reference,dtype=np.complex128);b=np.asarray(candidate,dtype=np.complex128)
-    if a.shape!=b.shape or a.ndim<2 or not np.isfinite(a).all() or not np.isfinite(b).all():
+    if a.shape!=b.shape or a.ndim<2 or not 2 <= a.shape[-1] <= 8 or not np.isfinite(a).all() or not np.isfinite(b).all():
         raise ValueError('matched finite complex channel vectors required')
+    if not np.isfinite(floor_db) or not -120 <= floor_db <= 0: raise ValueError('floor dB')
     aa=np.sum(abs(a)**2,axis=-1);bb=np.sum(abs(b)**2,axis=-1)
     if aa.max(initial=0)<=1e-24 or bb.max(initial=0)<=1e-24:
         raise ValueError('zero energy cannot qualify')
@@ -87,6 +88,6 @@ def envelope_rmse(reference,candidate,rate,window_ms=5.):
     if not usable:raise ValueError('too short')
     aa=np.mean(a[:usable].reshape(-1,n,a.shape[1])**2,axis=(1,2))
     bb=np.mean(b[:usable].reshape(-1,n,b.shape[1])**2,axis=(1,2))
-    if max(aa.max(),bb.max())<1e-20:raise ValueError('zero reference/target')
+    if aa.max()<1e-20 or bb.max()<1e-20:raise ValueError('zero reference/target')
     floor=aa.max()*1e-10;active=aa>aa.max()*1e-6
     return float(np.sqrt(np.mean((10*np.log10(np.maximum(bb[active],floor)/aa[active]))**2)))
