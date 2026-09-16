@@ -1,0 +1,114 @@
+name: objective-stereo-coherence
+on:
+  push:
+    paths: ['quality/objective_audio/**', '.github/workflows/objective-stereo-coherence.yml']
+  pull_request:
+    paths: ['quality/objective_audio/**', '.github/workflows/objective-stereo-coherence.yml']
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  OPENBLAS_NUM_THREADS: 1
+  OMP_NUM_THREADS: 1
+jobs:
+  correctness:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        standard: [20, 23]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: zkamiyama/boiled-egg
+          ref: f8e5ef2cbce84f396597860a408b4a3084796115
+          path: .pv-dependency
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Bind original and patched source identity
+        run: |
+          mkdir validation
+          git rev-parse HEAD > validation/COMMIT.txt
+          git rev-parse HEAD^{tree} > validation/TREE.txt
+          git archive --format=tar.gz --prefix=boiled-egg/ HEAD > validation/source.tar.gz
+          git ls-files -z | xargs -0 sha256sum > validation/SOURCE_SHA256SUMS
+          git -C .pv-dependency rev-parse HEAD > validation/PV_COMMIT.txt
+          git -C .pv-dependency apply "$PWD/quality/objective_audio/pooled_static_stereo.patch"
+          git -C .pv-dependency diff --binary > validation/applied.patch
+          (cd .pv-dependency && git ls-files -z | xargs -0 sha256sum) > validation/PATCHED_PV_SHA256SUMS
+      - name: Build full patched preview and calibrated tests
+        env:
+          COMPILER: ${{ matrix.compiler }}
+          STANDARD: ${{ matrix.standard }}
+        run: |
+          if test "$COMPILER" = clang; then export CC=clang CXX=clang++; else export CC=gcc CXX=g++; fi
+          python -m pip install numpy==2.3.5 scipy==1.17.0 soundfile==0.13.1
+          python -m pip freeze > validation/PYTHON_VERSIONS.txt
+          cmake -S .pv-dependency -B build-pv -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_STANDARD="$STANDARD" -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON
+          cmake --build build-pv -j2
+          ctest --test-dir build-pv --output-on-failure | tee validation/ctest.log
+          "$CXX" -O2 -std=c++"$STANDARD" quality/objective_audio/spatial_regression.cpp \
+            -I.pv-dependency/include -Lbuild-pv -Wl,-rpath,"$PWD/build-pv" -lboiled_egg -o build-pv/spatial-regression
+          build-pv/spatial-regression | tee validation/spatial-regression.log
+          python -W error::ResourceWarning -m unittest discover -s quality/objective_audio -p 'test_*.py' -v 2>&1 | tee validation/metrics.log
+          python -W error::ResourceWarning -m unittest discover -s eval/formant_audit -p 'test_*.py' -v 2>&1 | tee validation/existing-metrics.log
+      - name: Original stereo/time control must pass without relaxed thresholds
+        if: matrix.compiler == 'gcc' && matrix.standard == 20
+        run: |
+          python eval/formant_audit/stereo_time.py --spectral "$PWD/build-pv/boiled_egg_backend_cli" \
+            --output validation/stereo-time
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: objective-stereo-${{ matrix.compiler }}-${{ matrix.standard }}-${{ github.sha }}
+          path: |
+            validation/
+            !validation/stereo-time/cases/**/output.wav
+          if-no-files-found: error
+          retention-days: 7
+  sanitizer:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: zkamiyama/boiled-egg
+          ref: f8e5ef2cbce84f396597860a408b4a3084796115
+          path: .pv-dependency
+          persist-credentials: false
+      - name: Instrument actual corrected DSP and spatial regression
+        run: |
+          mkdir validation
+          git -C .pv-dependency apply "$PWD/quality/objective_audio/pooled_static_stereo.patch"
+          cmake -S .pv-dependency -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON \
+            -DCMAKE_CXX_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer'
+          cmake --build build-asan -j2
+          export ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1
+          ctest --test-dir build-asan --output-on-failure | tee validation/asan-ctest.log
+          clang++ -O1 -g -std=c++20 -fsanitize=address,undefined -fno-omit-frame-pointer \
+            quality/objective_audio/spatial_regression.cpp -I.pv-dependency/include \
+            -Lbuild-asan -Wl,-rpath,"$PWD/build-asan" -lboiled_egg -o build-asan/spatial-regression
+          build-asan/spatial-regression | tee validation/asan-spatial.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: objective-stereo-sanitizer-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7
