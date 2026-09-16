@@ -139,6 +139,11 @@ public:
             window_[i] = std::sqrt(0.5F - 0.5F * std::cos(scale * static_cast<float>(i)));
         }
         for (std::uint32_t k = 0; k < bins_; ++k) omega_[k] = scale * static_cast<float>(k);
+        if(channels_ > 1U && mode_ < BOILEDEGG_RESEARCH_PV_RT_FUZZY) {
+            timeline_rotation_.assign(bins_,0.0F);
+            timeline_predicted_.assign(bins_,0.0F);
+            linked_static_rotor_.resize(bins_);
+        }
         (void)kernels(); // precompute resampler tables during construction, never in the hot path
         scheduled_=execution.scheduled!=0;
         simd_=execution.simd!=0;
@@ -379,6 +384,36 @@ private:
             output_phase_[index]=wrap_phase(phase_[index]+rotation);
         }
     }
+    // The static multichannel path shares one bounded phase rotation per bin.
+    // Independent growing phase accumulators destroy fixed interchannel ratios.
+    void linked_static_predict(std::uint32_t k,float synthesis_hop,bool transient) noexcept {
+        // Only peak-owner predictions are read by the phase-locked path.
+        // Every selected peak owns itself; Classic has no owner indirection.
+        if(mode_ != BOILEDEGG_RESEARCH_PV_RT_CLASSIC && owners_[k] != k)return;
+        if(!initialized_ || transient) { timeline_predicted_[k]=0.0F; return; }
+        // A channel-index tie (especially at silence) must not choose a
+        // different frequency history after L/R exchange. Pool phase increments
+        // on the circle with current spectral power; do not average raw angles.
+        double real=0.0, imag=0.0;
+        for(std::uint32_t ch=0;ch<channels_;++ch) {
+            const auto index=static_cast<std::size_t>(ch)*bins_+k;
+            const double magnitude=magnitude_[index];
+            const double delta=static_cast<double>(phase_[index])-previous_phase_[index];
+            real+=magnitude*magnitude*std::cos(delta);
+            imag+=magnitude*magnitude*std::sin(delta);
+        }
+        const float hop=static_cast<float>(analysis_hop_);
+        const float advance=static_cast<float>(std::atan2(imag,real));
+        const float frequency=omega_[k]+wrap_phase(advance-omega_[k]*hop)/hop;
+        timeline_predicted_[k]=initialized_ && !transient
+            ? wrap_phase(timeline_rotation_[k]+(synthesis_hop-hop)*frequency) : 0.0F;
+    }
+    void linked_static_phase(std::uint32_t k) noexcept {
+        // Predictions for ALL owners are complete before this second pass.
+        const float rotation=timeline_predicted_[mode_==BOILEDEGG_RESEARCH_PV_RT_CLASSIC?k:owners_[k]];
+        timeline_rotation_[k]=rotation;
+        linked_static_rotor_[k]=std::polar(formant_gain_[k],rotation);
+    }
     void latch_timeline() noexcept {
         if(!timeline_.enabled())return;
         const auto control=timeline_.at(analysis_start_);
@@ -607,12 +642,17 @@ private:
                 static_cast<float>(internal_stretch()), initialized_,
                 mode_ == BOILEDEGG_RESEARCH_PV_RT_FUZZY, output_phase_.data());
         }
+        const bool linked_static = channels_ > 1U && !fuzzy_mode && !timeline_.enabled();
+        if(linked_static) {
+            for(std::uint32_t k=0;k<bins_;++k)linked_static_predict(k,synthesis_hop,transient);
+            for(std::uint32_t k=0;k<bins_;++k)linked_static_phase(k);
+        }
         if(timeline_.enabled()) {
             for(std::uint32_t k=0;k<bins_;++k)timeline_predict(k,synthesis_hop);
             for(std::uint32_t k=0;k<bins_;++k)timeline_phase(k);
         }
         for (std::uint32_t ch = 0; ch < channels_; ++ch) {
-            if (!fuzzy_mode && !timeline_.enabled()) {
+            if (!fuzzy_mode && !timeline_.enabled() && !linked_static) {
             for (std::uint32_t k = 0; k < bins_; ++k) {
                 const std::size_t idx = static_cast<std::size_t>(ch) * bins_ + k;
                 if (!initialized_ || transient) {
@@ -635,7 +675,10 @@ private:
             auto* work = fft_work_.data() + static_cast<std::size_t>(ch) * n_fft_;
             for (std::uint32_t k = 0; k < bins_; ++k) {
                 const std::size_t idx = static_cast<std::size_t>(ch) * bins_ + k;
-                work[k] = std::polar(magnitude_[idx] * formant_gain_[k], output_phase_[idx]);
+                // Multiplication preserves the input complex channel vector; no
+                // per-channel polar reconstruction or independent phase history.
+                if(linked_static) work[k] *= linked_static_rotor_[k];
+                else work[k] = std::polar(magnitude_[idx] * formant_gain_[k], output_phase_[idx]);
             }
             for (std::uint32_t k = bins_; k < n_fft_; ++k) work[k] = std::conj(work[n_fft_ - k]);
             transform(work, true);
@@ -653,7 +696,7 @@ private:
         drain_safe(flushed_);
         process_resampler(false);
         previous_phase_ = phase_;
-        previous_output_phase_ = output_phase_;
+        if(!linked_static) previous_output_phase_ = output_phase_;
         previous_linked_magnitude_ = linked_magnitude_;
         if (initialized_) {
             constexpr float alpha = 0.04F;
@@ -823,6 +866,7 @@ private:
     bool explicit_automation_{},variable_time_{};
     std::uint64_t output_source_index_{};
     std::vector<float> timeline_rotation_,timeline_predicted_;
+    std::vector<std::complex<float>> linked_static_rotor_;
     float frame_pitch_{1.0F};
     bool scheduled_{}, simd_{}, frame_active_{};
     std::uint32_t steps_per_input_{};
