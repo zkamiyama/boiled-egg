@@ -44,7 +44,7 @@ jobs:
           ctest --test-dir build --output-on-failure | tee validation/ctest.log
           build/boiled_egg_static_stereo_replay > validation/direct-replay.csv
           python -W error::ResourceWarning -m unittest discover -s quality/objective_audio -p 'test_*.py' -v 2>&1 | tee validation/python.log
-          ./scripts/test_backend_install.sh build | tee validation/install.log
+          ./scripts/test_backend_install.sh build ON | tee validation/install.log
       - uses: actions/checkout@v4
         if: matrix.compiler == 'gcc' && matrix.standard == 20
         with:
