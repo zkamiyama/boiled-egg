@@ -33,6 +33,12 @@ jobs:
           ref: f8e5ef2cbce84f396597860a408b4a3084796115
           path: .pv-dependency
           persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: zkamiyama/boiled-egg
+          ref: 894476d1c5a44cd0c2c9ff1cccb34e0fca792f5c
+          path: .audit-dependency
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -43,6 +49,7 @@ jobs:
           git rev-parse HEAD^{tree} > validation/TREE.txt
           git archive --format=tar.gz --prefix=boiled-egg/ HEAD > validation/source.tar.gz
           git ls-files -z | xargs -0 sha256sum > validation/SOURCE_SHA256SUMS
+          git -C .audit-dependency rev-parse HEAD > validation/AUDIT_COMMIT.txt
           git -C .pv-dependency rev-parse HEAD > validation/PV_COMMIT.txt
           git -C .pv-dependency apply "$PWD/quality/objective_audio/pooled_static_stereo.patch"
           git -C .pv-dependency diff --binary > validation/applied.patch
@@ -63,11 +70,11 @@ jobs:
             -I.pv-dependency/include -Lbuild-pv -Wl,-rpath,"$PWD/build-pv" -lboiled_egg -o build-pv/spatial-regression
           build-pv/spatial-regression | tee validation/spatial-regression.log
           python -W error::ResourceWarning -m unittest discover -s quality/objective_audio -p 'test_*.py' -v 2>&1 | tee validation/metrics.log
-          python -W error::ResourceWarning -m unittest discover -s eval/formant_audit -p 'test_*.py' -v 2>&1 | tee validation/existing-metrics.log
+          python -W error::ResourceWarning -m unittest discover -s .audit-dependency/eval/formant_audit -p 'test_*.py' -v 2>&1 | tee validation/existing-metrics.log
       - name: Original stereo/time control must pass without relaxed thresholds
         if: matrix.compiler == 'gcc' && matrix.standard == 20
         run: |
-          python eval/formant_audit/stereo_time.py --spectral "$PWD/build-pv/boiled_egg_backend_cli" \
+          python .audit-dependency/eval/formant_audit/stereo_time.py --spectral "$PWD/build-pv/boiled_egg_backend_cli" \
             --output validation/stereo-time
       - uses: actions/upload-artifact@v4
         if: always()
