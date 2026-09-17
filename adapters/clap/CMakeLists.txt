@@ -1,3 +1,7 @@
+if(NOT TARGET boiled_egg_plugin_common)
+  add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../common" "${CMAKE_BINARY_DIR}/adapters/common")
+endif()
+
 include(FetchContent)
 
 FetchContent_Declare(
@@ -15,7 +19,7 @@ add_library(boiled_egg_clap_headers INTERFACE)
 target_include_directories(boiled_egg_clap_headers INTERFACE ${clap_headers_SOURCE_DIR}/include)
 
 add_library(boiled_egg_clap MODULE boiled_egg_clap.cpp)
-target_link_libraries(boiled_egg_clap PRIVATE boiled_egg::boiled_egg boiled_egg_clap_headers)
+target_link_libraries(boiled_egg_clap PRIVATE boiled_egg_plugin_common boiled_egg_clap_headers)
 target_compile_features(boiled_egg_clap PRIVATE cxx_std_20)
 set_target_properties(boiled_egg_clap PROPERTIES
   PREFIX ""
@@ -40,4 +44,17 @@ if(BOILED_EGG_BUILD_TESTS AND UNIX AND NOT APPLE)
   target_compile_features(boiled_egg_clap_smoke PRIVATE cxx_std_20)
   add_test(NAME boiled_egg_clap_smoke
            COMMAND boiled_egg_clap_smoke $<TARGET_FILE:boiled_egg_clap>)
+endif()
+if(BOILED_EGG_BUILD_TESTS AND UNIX)
+  add_executable(boiled_egg_clap_pitch_test test_clap_pitch_ui.cpp)
+  target_link_libraries(boiled_egg_clap_pitch_test PRIVATE boiled_egg_plugin_common ${CMAKE_DL_LIBS})
+  target_include_directories(boiled_egg_clap_pitch_test PRIVATE ${clap_headers_SOURCE_DIR}/include)
+  target_link_options(boiled_egg_clap_pitch_test PRIVATE -Wl,--export-dynamic)
+  add_test(NAME boiled_egg_clap_pitch COMMAND boiled_egg_clap_pitch_test $<TARGET_FILE:boiled_egg_clap>)
+  if(BOILED_EGG_PLUGIN_HAS_UI)
+    find_program(XVFB_RUN xvfb-run)
+    if(XVFB_RUN)
+      add_test(NAME boiled_egg_clap_editor COMMAND ${XVFB_RUN} -a $<TARGET_FILE:boiled_egg_clap_pitch_test> $<TARGET_FILE:boiled_egg_clap> --ui)
+    endif()
+  endif()
 endif()
