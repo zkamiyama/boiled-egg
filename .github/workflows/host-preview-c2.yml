@@ -1,0 +1,112 @@
+name: host-preview-c2
+on:
+  push:
+    paths: ['adapters/**', 'quality/host_preview/**', 'docs/HOST_PREVIEW_C2.md', '.github/workflows/host-preview-c2.yml']
+  pull_request:
+    paths: ['adapters/**', 'quality/host_preview/**', 'docs/HOST_PREVIEW_C2.md', '.github/workflows/host-preview-c2.yml']
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  hosts:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {compiler: gcc, standard: 20, spectral: 'ON'}
+          - {compiler: gcc, standard: 23, spectral: 'ON'}
+          - {compiler: clang, standard: 20, spectral: 'ON'}
+          - {compiler: clang, standard: 23, spectral: 'ON'}
+          - {compiler: gcc, standard: 20, spectral: 'OFF'}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libx11-dev xvfb xauth
+      - name: Build and load both formats from current checkout
+        env:
+          COMPILER: ${{ matrix.compiler }}
+          STANDARD: ${{ matrix.standard }}
+          SPECTRAL: ${{ matrix.spectral }}
+        run: |
+          mkdir validation
+          if test "$COMPILER" = clang; then export CC=clang CXX=clang++; else export CC=gcc CXX=g++; fi
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_STANDARD="$STANDARD" -DBOILED_EGG_BUILD_SHARED=OFF \
+            -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL="$SPECTRAL" \
+            -DBOILED_EGG_BUILD_CLAP=ON -DBOILED_EGG_BUILD_VST3=ON -DBOILED_EGG_PLUGIN_UI=ON
+          cmake --build build -j2 2>&1 | tee validation/build.log
+          ctest --test-dir build --output-on-failure 2>&1 | tee validation/ctest.log
+          # Explicitly exercise both editors, even if a test-registration regression occurs.
+          xvfb-run -a build/adapters/clap/boiled_egg_clap_pitch_test build/adapters/clap/boiled_egg.clap --ui validation/editor.ppm
+          xvfb-run -a build/adapters/vst3/boiled_egg_vst3_pitch_test "$PWD/build/VST3/Release/boiled egg.vst3" --ui
+          if ldd build/adapters/clap/boiled_egg.clap | grep -q libboiled_egg; then exit 1; fi
+          module=$(find build/VST3 -name '*.so' -type f | head -1)
+          test -n "$module"
+          if ldd "$module" | grep -q libboiled_egg; then exit 1; fi
+      - name: Immutable source and dependency provenance
+        if: always()
+        run: |
+          mkdir -p validation
+          git rev-parse HEAD > validation/COMMIT.txt
+          git rev-parse HEAD^{tree} > validation/TREE.txt
+          git archive --format=tar.gz --prefix=boiled-egg/ HEAD > validation/source.tar.gz
+          git ls-files -z | xargs -0 sha256sum > validation/SOURCE_SHA256SUMS
+          if test -d build/_deps/clap_headers-src; then git -C build/_deps/clap_headers-src rev-parse HEAD > validation/CLAP_COMMIT.txt; fi
+          if test -d build/_deps/vst3sdk-src; then
+            git -C build/_deps/vst3sdk-src rev-parse HEAD > validation/VST3_COMMIT.txt
+            git -C build/_deps/vst3sdk-src submodule status --recursive > validation/VST3_SUBMODULES.txt
+          fi
+      - name: Preserve dependency sources for independent local rebuild
+        if: matrix.compiler == 'gcc' && matrix.standard == 20 && matrix.spectral == 'ON'
+        run: |
+          # Build-only official dependencies. No user audio, credentials or fonts.
+          tar --exclude-vcs --exclude='vstgui4' --exclude='doc' --exclude='*.ttf' --exclude='*.otf' \
+            --exclude='*.woff' --exclude='*.woff2' -czf validation/build-dependencies.tar.gz \
+            -C build/_deps clap_headers-src vst3sdk-src
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: host-c2-${{ matrix.compiler }}-${{ matrix.standard }}-${{ matrix.spectral }}-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7
+  instrumented:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix: {kind: [address, thread]}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Instrument actual migrated processor and SDK
+        env: {KIND: '${{ matrix.kind }}'}
+        run: |
+          mkdir validation
+          if test "$KIND" = address; then
+            opts='-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DBOILED_EGG_SANITIZE=ON'
+          else
+            opts='-DBOILED_EGG_THREAD_SANITIZE=ON'
+          fi
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON -DBOILED_EGG_BUILD_CLAP=ON \
+            -DBOILED_EGG_PLUGIN_UI=OFF -DBOILED_EGG_BUILD_TOOLS=OFF -DBOILED_EGG_BUILD_BENCH=OFF $opts
+          cmake --build build -j2
+          export ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 TSAN_OPTIONS=halt_on_error=1
+          ctest --test-dir build -R 'boiled_egg_(plugin_controls|plugin_threads|spectral_threads_test|ramp_threads_test)$' \
+            --output-on-failure 2>&1 | tee validation/instrumented.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: host-c2-${{ matrix.kind }}-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7
