@@ -59,6 +59,13 @@ jobs:
           ref: bddc2eca9f0a2c9a801914df75dd34b76bed83e9
           path: .donor
           persist-credentials: false
+      - uses: actions/checkout@v4
+        if: matrix.compiler == 'gcc' && matrix.standard == 20
+        with:
+          repository: zkamiyama/boiled-egg
+          ref: 3ca2fc249c2df56aaacf0e2645a85124e2a67810
+          path: .host-reference
+          persist-credentials: false
       - name: Execute unchanged old clients with three different SDK libraries
         if: matrix.compiler == 'gcc' && matrix.standard == 20
         run: |
@@ -76,7 +83,7 @@ jobs:
           g++ -O2 -std=c++20 quality/sdk_preview/legacy_wrapper.cpp -I.previous/include \
             -Lbuild-previous -Wl,-rpath,"$PWD/build-previous" -lboiled_egg -o validation/legacy-cpp
           python quality/sdk_preview/audit.py \
-            --baseline-source .previous --donor-source .donor --source . \
+            --baseline-source .previous --donor-source .donor --source . --host-reference-source .host-reference \
             --original-library build-previous/libboiled_egg.so \
             --off-library build-off/libboiled_egg.so --on-library build-on/libboiled_egg.so \
             --c-client validation/legacy-c --cpp-client validation/legacy-cpp \
@@ -145,7 +152,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Build the UNCHANGED main adapter with the expanded SDK
+      - name: Build the current reviewed adapter with the expanded SDK
         env:
           ADAPTER: ${{ matrix.adapter }}
         run: |

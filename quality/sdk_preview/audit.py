@@ -35,10 +35,12 @@ def directory(root: Path, prefix: str) -> dict[str, str]:
     return {str(p.relative_to(root)): sha(p) for p in sorted((root / prefix).rglob('*')) if p.is_file()}
 
 
-def source_contract(main: Path, donor: Path, current: Path) -> dict:
+def source_contract(main: Path, donor: Path, current: Path, host_reference: Path | None = None) -> dict:
     protected = {}
     for prefix in ('adapters', 'eval', 'research'):
-        expected = directory(main, prefix)
+        # C1 defaults to the original adapters. C2 supplies a separately pinned,
+        # reviewed host snapshot; this is exact equality, not a wildcard waiver.
+        expected = directory(host_reference if prefix == 'adapters' and host_reference is not None else main, prefix)
         if not expected or expected != directory(current, prefix):
             raise ValueError(f'protected {prefix} tree changed')
         protected.update(expected)
@@ -128,7 +130,10 @@ def run(args) -> dict:
                      off=args.off_library.resolve(strict=True), on=args.on_library.resolve(strict=True))
     clients = dict(c=args.c_client.resolve(strict=True), cpp=args.cpp_client.resolve(strict=True))
     files = {str(p): sha(p) for p in [*libraries.values(), *clients.values(), args.donor_replay, args.candidate_replay, Path(__file__)]}
-    scope = source_contract(base, donor, current)
+    host_reference = getattr(args, 'host_reference_source', None)
+    if host_reference is not None:
+        host_reference = host_reference.resolve(strict=True)
+    scope = source_contract(base, donor, current, host_reference)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     # An interrupted/failed run retains evidence, but cannot publish summary.json.
     args.output.mkdir()
@@ -148,7 +153,7 @@ def run(args) -> dict:
         if key[-1] == 32 and values != records[(*key[:-1], 257)]:
             raise ValueError('legacy block partition changed')
     preview_count = compare(args.donor_replay, args.candidate_replay, 'preview')
-    if scope != source_contract(base, donor, current):
+    if scope != source_contract(base, donor, current, host_reference):
         raise ValueError('sources changed during run')
     for name, digest in files.items():
         if sha(Path(name)) != digest:
@@ -169,4 +174,5 @@ if __name__ == '__main__':
     for name in ('baseline-source', 'donor-source', 'source', 'original-library', 'off-library',
                  'on-library', 'c-client', 'cpp-client', 'donor-replay', 'candidate-replay', 'output'):
         p.add_argument('--'+name, type=Path, required=True)
+    p.add_argument('--host-reference-source', type=Path, help='Explicit reviewed C2 adapter snapshot; default retains C1 main-adapter equality')
     r = run(p.parse_args()); print(json.dumps({k:r[k] for k in ('legacy_pairs', 'preview_pairs', 'runtime_files', 'protected_files')}))

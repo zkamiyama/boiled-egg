@@ -43,6 +43,21 @@ class AuditTests(unittest.TestCase):
                 with self.assertRaises(ValueError):a.source_contract(*roots)
                 if original is None:p.unlink()
                 else:p.write_bytes(original)
+    def test_explicit_host_reference_is_exact_not_a_waiver(self):
+        with tempfile.TemporaryDirectory() as d:
+            roots=[Path(d)/n for n in ('base','donor','new','host')]
+            files=['adapters/plugin.cpp','eval/check.py','research/old.py','include/boiled_egg/boiled_egg.h',
+                   'src/engine.cpp','src/engine.hpp','src/profile.cpp']
+            for r in roots:
+                for f in files:
+                    p=r/f;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(f+'\n')
+            for r in roots[2:]: (r/'adapters/plugin.cpp').write_text('reviewed C2 adapter\n')
+            with self.assertRaises(ValueError):a.source_contract(*roots[:3])
+            a.source_contract(*roots[:3],host_reference=roots[3])
+            for name in ('adapters/plugin.cpp','src/engine.cpp','eval/check.py'):
+                path=roots[2]/name;old=path.read_bytes();path.write_text('not reviewed')
+                with self.assertRaises(ValueError):a.source_contract(*roots[:3],host_reference=roots[3])
+                path.write_bytes(old)
     def test_bad_metadata_and_columns_are_rejected(self):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d)/'x.csv';rows=[(*k,0,1234) for k in sorted(a.expected('preview'))]
