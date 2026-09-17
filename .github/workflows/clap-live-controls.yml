@@ -1,0 +1,50 @@
+name: clap-live-controls
+on:
+  push:
+    paths: ['adapters/clap/**', 'adapters/common/**', '.github/workflows/clap-live-controls.yml']
+  pull_request:
+    paths: ['adapters/clap/**', 'adapters/common/**', '.github/workflows/clap-live-controls.yml']
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  instrumented-module:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address, thread]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build and exercise actual module, not only shared processor
+        env:
+          KIND: ${{ matrix.sanitizer }}
+        run: |
+          mkdir validation
+          if test "$KIND" = address; then
+            options='-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DBOILED_EGG_SANITIZE=ON'
+          else
+            options='-DBOILED_EGG_THREAD_SANITIZE=ON'
+          fi
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DBOILED_EGG_BUILD_SHARED=OFF -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON \
+            -DBOILED_EGG_BUILD_CLAP=ON -DBOILED_EGG_PLUGIN_UI=OFF $options
+          cmake --build build -j2 2>&1 | tee validation/build.log
+          export ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 TSAN_OPTIONS=halt_on_error=1
+          ctest --test-dir build -R 'boiled_egg_(clap_live_configuration|clap_parameter_metadata|clap_lifecycle|plugin_threads|spectral_threads_test|ramp_threads_test)$' \
+            --output-on-failure 2>&1 | tee validation/tests.log
+          git rev-parse HEAD > validation/COMMIT.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: clap-live-${{ matrix.sanitizer }}-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7
