@@ -45,9 +45,9 @@ jobs:
             -DBOILED_EGG_BUILD_CLAP=ON -DBOILED_EGG_BUILD_VST3=ON -DBOILED_EGG_PLUGIN_UI=ON
           cmake --build build -j2 2>&1 | tee validation/build.log
           ctest --test-dir build --output-on-failure 2>&1 | tee validation/ctest.log
-          # Explicitly exercise both editors, even if a test-registration regression occurs.
+          # Explicit GUI invocation also catches missing test registration.
           xvfb-run -a build/adapters/clap/boiled_egg_clap_pitch_test build/adapters/clap/boiled_egg.clap --ui validation/editor.ppm
-          xvfb-run -a build/adapters/vst3/boiled_egg_vst3_pitch_test "$PWD/build/VST3/Release/boiled egg.vst3" --ui
+          xvfb-run -a build/bin/Release/boiled_egg_vst3_pitch_test "$PWD/build/VST3/Release/boiled egg.vst3" --ui
           if ldd build/adapters/clap/boiled_egg.clap | grep -q libboiled_egg; then exit 1; fi
           module=$(find build/VST3 -name '*.so' -type f | head -1)
           test -n "$module"
@@ -66,12 +66,13 @@ jobs:
             git -C build/_deps/vst3sdk-src submodule status --recursive > validation/VST3_SUBMODULES.txt
           fi
       - name: Preserve dependency sources for independent local rebuild
-        if: matrix.compiler == 'gcc' && matrix.standard == 20 && matrix.spectral == 'ON'
+        if: always() && matrix.compiler == 'gcc' && matrix.standard == 20 && matrix.spectral == 'ON'
         run: |
-          # Build-only official dependencies. No user audio, credentials or fonts.
-          tar --exclude-vcs --exclude='vstgui4' --exclude='doc' --exclude='*.ttf' --exclude='*.otf' \
-            --exclude='*.woff' --exclude='*.woff2' -czf validation/build-dependencies.tar.gz \
-            -C build/_deps clap_headers-src vst3sdk-src
+          if test -d build/_deps/clap_headers-src && test -d build/_deps/vst3sdk-src; then
+            tar --exclude-vcs --exclude='vstgui4' --exclude='doc' --exclude='*.ttf' --exclude='*.otf' \
+              --exclude='*.woff' --exclude='*.woff2' -czf validation/build-dependencies.tar.gz \
+              -C build/_deps clap_headers-src vst3sdk-src
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -99,7 +100,7 @@ jobs:
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON -DBOILED_EGG_BUILD_CLAP=ON \
             -DBOILED_EGG_PLUGIN_UI=OFF -DBOILED_EGG_BUILD_TOOLS=OFF -DBOILED_EGG_BUILD_BENCH=OFF $opts
-          cmake --build build -j2
+          cmake --build build -j2 2>&1 | tee validation/build.log
           export ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 TSAN_OPTIONS=halt_on_error=1
           ctest --test-dir build -R 'boiled_egg_(plugin_controls|plugin_threads|spectral_threads_test|ramp_threads_test)$' \
             --output-on-failure 2>&1 | tee validation/instrumented.log
