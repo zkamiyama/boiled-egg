@@ -1,6 +1,7 @@
 if(NOT TARGET boiled_egg_plugin_common)
   add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../common" "${CMAKE_BINARY_DIR}/adapters/common")
 endif()
+get_target_property(BOILED_EGG_PLUGIN_HAS_UI boiled_egg_plugin_common BOILED_EGG_HAS_NATIVE_EDITOR)
 
 if(CMAKE_VERSION VERSION_LESS 3.25)
   message(FATAL_ERROR "BOILED_EGG_BUILD_VST3 requires CMake 3.25+ (VST SDK 3.8 requirement)")

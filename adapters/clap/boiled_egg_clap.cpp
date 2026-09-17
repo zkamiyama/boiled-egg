@@ -18,7 +18,8 @@ struct UiQueue {
  bool put(UiEvent e,unsigned reserve)noexcept{if(free()<reserve)return false;const auto w=write.load(std::memory_order_relaxed);values[w%values.size()]=e;write.store(w+1,std::memory_order_release);return true;}
 };
 struct Plugin {
- clap_plugin_t clap{};const clap_host_t* host{};const clap_host_params_t* host_params{};Processor processor;UiQueue ui;
+ clap_plugin_t clap{};const clap_host_t* host{};const clap_host_params_t* host_params{};const clap_host_latency_t* host_latency{};
+ uint32_t announced_latency{};bool latency_known{};Processor processor;UiQueue ui;
  bool processing{};
 #ifdef BOILED_EGG_PLUGIN_X11
  const clap_host_timer_support_t* timers{};std::unique_ptr<PitchEditor> editor;clap_id timer_id=CLAP_INVALID_ID;
@@ -54,6 +55,7 @@ bool apply_controls(Plugin& p,const clap_input_events_t* in)noexcept{
 }
 bool CLAP_ABI init(const clap_plugin_t* p){auto& s=*self(p);if(!s.host||!clap_version_is_compatible(s.host->clap_version))return false;
  if(s.host->get_extension){s.host_params=static_cast<const clap_host_params_t*>(s.host->get_extension(s.host,CLAP_EXT_PARAMS));
+ s.host_latency=static_cast<const clap_host_latency_t*>(s.host->get_extension(s.host,CLAP_EXT_LATENCY));
 #ifdef BOILED_EGG_PLUGIN_X11
  s.timers=static_cast<const clap_host_timer_support_t*>(s.host->get_extension(s.host,CLAP_EXT_TIMER_SUPPORT));
 #endif
@@ -67,7 +69,13 @@ void CLAP_ABI destroy(const clap_plugin_t* p){
 #endif
  delete self(p);}
 bool CLAP_ABI activate(const clap_plugin_t* p,double rate,uint32_t min,uint32_t max){if(!std::isfinite(rate)||rate<8000||rate>384000||rate!=std::floor(rate)||min<1||max<min)return false;
- try{return self(p)->processor.activate(unsigned(rate),max);}catch(...){return false;}}
+ try{auto& s=*self(p);if(!s.processor.activate(unsigned(rate),max))return false;
+  const auto samples=s.processor.latency();const bool changed=!s.latency_known||samples!=s.announced_latency;
+  s.announced_latency=samples;s.latency_known=true;
+  // CLAP permits this callback only on the main thread inside activate().
+  // Never notify while the old active configuration is still processing.
+  if(changed&&s.host_latency&&s.host_latency->changed)s.host_latency->changed(s.host);
+  return true;}catch(...){return false;}}
 void CLAP_ABI deactivate(const clap_plugin_t* p){self(p)->processing=false;self(p)->processor.deactivate();}
 bool CLAP_ABI start(const clap_plugin_t* p){auto& s=*self(p);s.processing=s.processor.is_active();return s.processing;}
 void CLAP_ABI stop(const clap_plugin_t* p){self(p)->processing=false;}

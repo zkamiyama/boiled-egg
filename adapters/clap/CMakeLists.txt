@@ -1,6 +1,7 @@
 if(NOT TARGET boiled_egg_plugin_common)
   add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../common" "${CMAKE_BINARY_DIR}/adapters/common")
 endif()
+get_target_property(BOILED_EGG_PLUGIN_HAS_UI boiled_egg_plugin_common BOILED_EGG_HAS_NATIVE_EDITOR)
 
 include(FetchContent)
 
@@ -34,7 +35,8 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
   set_target_properties(boiled_egg_clap PROPERTIES BUNDLE TRUE BUNDLE_EXTENSION clap)
 endif()
 
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT BOILED_EGG_SANITIZE)
+  # ASan runtime is supplied by the instrumented host executable.
   target_link_options(boiled_egg_clap PRIVATE -Wl,-z,defs)
 endif()
 
@@ -57,4 +59,10 @@ if(BOILED_EGG_BUILD_TESTS AND UNIX)
       add_test(NAME boiled_egg_clap_editor COMMAND ${XVFB_RUN} -a $<TARGET_FILE:boiled_egg_clap_pitch_test> $<TARGET_FILE:boiled_egg_clap> --ui)
     endif()
   endif()
+endif()
+
+if(BOILED_EGG_BUILD_TESTS AND UNIX AND NOT APPLE)
+  add_executable(boiled_egg_clap_lifecycle_test test_clap_lifecycle.cpp)
+  target_link_libraries(boiled_egg_clap_lifecycle_test PRIVATE boiled_egg_plugin_common boiled_egg_clap_headers ${CMAKE_DL_LIBS})
+  add_test(NAME boiled_egg_clap_lifecycle COMMAND boiled_egg_clap_lifecycle_test $<TARGET_FILE:boiled_egg_clap>)
 endif()
