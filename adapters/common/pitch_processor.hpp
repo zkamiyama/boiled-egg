@@ -17,7 +17,9 @@ public:
  bool activate(unsigned rate,unsigned max_block);
  void deactivate() noexcept;
  bool reset() noexcept;
- bool process(const float* const* in,float* const* out,unsigned frames,std::span<const Event> events) noexcept;
+ // CLAP live host edits may stage nonautomatable configuration changes.
+ // Other callers retain strict automation-only behavior by default.
+ bool process(const float* const* in,float* const* out,unsigned frames,std::span<const Event> events,bool live_configuration=false) noexcept;
  bool is_active() const noexcept {return active_;}
  bool needs_restart() const noexcept {return active_&&!same_configuration(targets.snapshot(),configuration_);}
  void rate_hint(unsigned rate) noexcept {if(!active_)rate_=rate;}

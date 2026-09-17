@@ -86,7 +86,7 @@ clap_process_status CLAP_ABI process(const clap_plugin_t* p,const clap_process_t
  if(!d->frames_count){if(!apply_controls(s,d->in_events))return CLAP_PROCESS_ERROR;output_ui(s,d->out_events);return CLAP_PROCESS_CONTINUE;}
  if(d->audio_inputs_count!=1||d->audio_outputs_count!=1||!d->audio_inputs||!d->audio_outputs)return CLAP_PROCESS_ERROR;
  const auto& in=d->audio_inputs[0];auto& out=d->audio_outputs[0];if(in.channel_count!=2||out.channel_count!=2||!in.data32||!out.data32)return CLAP_PROCESS_ERROR;
- const float* inputs[]={in.data32[0],in.data32[1]};if(!s.processor.process(inputs,out.data32,d->frames_count,std::span(events.data(),count)))return CLAP_PROCESS_ERROR;
+ const float* inputs[]={in.data32[0],in.data32[1]};if(!s.processor.process(inputs,out.data32,d->frames_count,std::span(events.data(),count),true))return CLAP_PROCESS_ERROR;
  out.constant_mask=0;output_ui(s,d->out_events);request_restart(s);return CLAP_PROCESS_CONTINUE;
 }
 uint32_t CLAP_ABI ports_count(const clap_plugin_t*,bool){return 1;}
@@ -95,6 +95,8 @@ uint32_t CLAP_ABI param_count(const clap_plugin_t*){return Count;}
 bool CLAP_ABI param_info(const clap_plugin_t*,uint32_t i,clap_param_info_t* info){if(i>=Count||!info)return false;const auto& d=parameters[i];*info={};info->id=clap_param_id(i);
  info->flags=(d.automatable?CLAP_PARAM_IS_AUTOMATABLE|CLAP_PARAM_REQUIRES_PROCESS:0)|(d.stepped?CLAP_PARAM_IS_STEPPED:0);
  std::snprintf(info->name,sizeof(info->name),"%s",d.name);std::snprintf(info->module,sizeof(info->module),"%s",i>=Backend?"Processing (restart)":"Shifter 1");
+ if(i==Bypass)info->flags|=CLAP_PARAM_IS_BYPASS;
+ if(i>=Backend)info->flags|=CLAP_PARAM_IS_ENUM;
  info->min_value=d.min;info->max_value=d.max;info->default_value=d.initial;return true;}
 bool CLAP_ABI param_get(const clap_plugin_t* p,clap_id id,double* value){unsigned i;if(!value||!clap_index(id,i))return false;*value=self(p)->processor.targets.get(i);return true;}
 bool CLAP_ABI value_text(const clap_plugin_t*,clap_id id,double value,char* text,uint32_t cap){unsigned i;if(!text||!cap||!clap_index(id,i)||!std::isfinite(value)||!valid_value(i,float(value)))return false;

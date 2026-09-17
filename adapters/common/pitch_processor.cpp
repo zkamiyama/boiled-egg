@@ -58,25 +58,35 @@ bool Processor::segment(const float* const* in,float* const* out,unsigned offset
   position_+=n;
  }return true;
 }
-bool Processor::process(const float* const* in,float* const* out,unsigned n,std::span<const Event> events) noexcept {
+bool Processor::process(const float* const* in,float* const* out,unsigned n,std::span<const Event> events,bool live_configuration) noexcept {
  if(!core_||!active_||fault_||n>max_block_||events.size()>256||(n&&!out))return false;
  if(n){for(unsigned ch=0;ch<2;++ch){if(!out[ch]||(in&&!in[ch]))return false;if(in)for(unsigned i=0;i<n;++i)if(!std::isfinite(in[ch][i]))return false;}}
  // One bounded snapshot, no spinning on UI publications. A state restore can
  // span several atomic stores; retain the last valid audio configuration until
  // a consistent compatible snapshot is visible. Timestamped events below are
  // still validated strictly and transactionally, never silently discarded.
- auto start=targets.snapshot();if(!valid_values(start)||!same_configuration(start,configuration_))start=audio_;
- auto validation=start;unsigned previous=0;
+ auto requested=targets.snapshot();if(!valid_values(requested))requested=audio_;
+ auto start=same_configuration(requested,configuration_)?requested:audio_;
+ // Validate every group before publishing targets or consuming any audio.
+ // A pending configuration and its controls must be valid together, even though
+ // they cannot yet be applied to the active engine.
+ auto validation=live_configuration?requested:start;unsigned previous=0;
  for(std::size_t i=0;i<events.size();){const auto offset=events[i].offset;if((n?offset>=n:offset!=0)||offset<previous)return false;previous=offset;
-  do{const auto& e=events[i];if(e.index>=Count||!parameters[e.index].automatable||!valid_value(e.index,e.value))return false;validation[e.index]=e.value;++i;}while(i<events.size()&&events[i].offset==offset);
+  do{const auto& e=events[i];if(e.index>=Count||(!live_configuration&&!parameters[e.index].automatable)||!valid_value(e.index,e.value))return false;validation[e.index]=e.value;++i;}while(i<events.size()&&events[i].offset==offset);
   if(!valid_values(validation))return false;
  }
  if(!apply(start))return false;
  unsigned cursor=0;std::size_t event=0;
  while(event<events.size()){
-  const auto at=events[event].offset;if(at>cursor&&!segment(in,out,cursor,at-cursor))return false;cursor=at;auto next=audio_;
+  const auto at=events[event].offset;if(at>cursor&&!segment(in,out,cursor,at-cursor))return false;cursor=at;auto next=live_configuration?requested:audio_;
   const auto begin=event;do{next[events[event].index]=events[event].value;++event;}while(event<events.size()&&events[event].offset==at);
-  if(!apply(next))return false;for(auto i=begin;i<event;++i)targets.store(events[i].index,events[i].value);
+  if(!live_configuration||same_configuration(next,configuration_)){
+   if(!apply(next))return false;
+  }
+  // Otherwise retain active DSP/latency and stage all controls for reactivation.
+  // Returning to configuration_ cancels the pending change at this sample.
+  requested=next;
+  for(auto i=begin;i<event;++i)targets.store(events[i].index,events[i].value);
  }
  if(cursor<n&&!segment(in,out,cursor,n-cursor))return false;
  error_code_.store(0);return true;
