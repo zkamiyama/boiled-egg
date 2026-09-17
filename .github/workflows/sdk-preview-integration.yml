@@ -63,7 +63,7 @@ jobs:
         if: matrix.compiler == 'gcc' && matrix.standard == 20
         with:
           repository: zkamiyama/boiled-egg
-          ref: 3ca2fc249c2df56aaacf0e2645a85124e2a67810
+          ref: 124669dc0885d6eded9076173f22a78c7adb5f39
           path: .host-reference
           persist-credentials: false
       - name: Execute unchanged old clients with three different SDK libraries
