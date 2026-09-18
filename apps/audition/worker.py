@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 from native import Transport
+import native_batch
 
 @dataclass(frozen=True)
 class Settings:
@@ -33,11 +34,12 @@ class PlayerWorker(threading.Thread):
         super().__init__(name='boiled-egg-dsp',daemon=True)
         self.library=library;self.commands=queue.Queue(maxsize=64);self.audio=queue.Queue(maxsize=2)
         self.messages=queue.Queue();self.quit_event=threading.Event();self.settings=Settings()
+        self.render_cancel=threading.Event()
         self.source=None;self.source_rate=48000;self.handle=None;self.playing=False;self.epoch=0
     def command(self, kind, value=None):
         try:self.commands.put_nowait((kind,value))
         except queue.Full:raise RuntimeError('Command queue full; wait for current load/render to finish')
-    def stop_worker(self):self.quit_event.set()
+    def stop_worker(self):self.render_cancel.set();self.quit_event.set()
     def clear_audio(self):
         while True:
             try:self.audio.get_nowait()
@@ -95,7 +97,11 @@ class PlayerWorker(threading.Thread):
                 self.playing=False;self.epoch+=1;self.clear_audio()
                 self.messages.put(('ready',dict(rate=self.settings.output_rate,channels=self.source.shape[1],epoch=self.epoch)))
                 self.messages.put(('position',dict(source_seconds=self.handle.info()['source_position']/self.source_rate)))
-        elif kind=='export':self._export(*value)
+        elif kind in ('export','compare_native'):
+            try:
+                if kind=='export':self._export(*value)
+                else:self._compare_native(*value)
+            finally:self.messages.put(('render_finished',None))
         else:raise ValueError('Unknown worker command')
     def _export(self,path,seconds):
         if self.source is None:raise ValueError('Load a source first')
@@ -112,11 +118,20 @@ class PlayerWorker(threading.Thread):
                     h.set(self.settings.speed,self.settings.pitch,self.settings.formant);h.seek(source_position)
                     with sf.SoundFile(raw,mode='w',samplerate=self.settings.output_rate,channels=self.source.shape[1],format='WAV',subtype='FLOAT') as stream:
                         for pos in range(0,total,1024):
-                            if self.quit_event.is_set():raise InterruptedError('Export cancelled')
+                            if self.quit_event.is_set() or self.render_cancel.is_set():raise InterruptedError('Export cancelled')
                             stream.write(h.render(min(1024,total-pos)))
             except BaseException:
                 raw.close();path.unlink(missing_ok=True);raise
         self.messages.put(('exported',str(path)))
+    def _compare_native(self,directory,seconds):
+        if self.source is None or self.handle is None:raise ValueError('Load a source first')
+        self.playing=False
+        settings=self.settings
+        report=native_batch.render_batch(self.source,self.source_rate,directory,
+            self.handle.info()['source_position'],seconds,settings.speed,settings.pitch,
+            settings.policy,settings.formant,settings.output_rate,self.library,self.render_cancel,
+            progress=lambda data:self.messages.put(('render_progress',data)))
+        self.messages.put(('native_comparison',(str(directory),report)))
     def run(self):
         try:
             while not self.quit_event.is_set():
