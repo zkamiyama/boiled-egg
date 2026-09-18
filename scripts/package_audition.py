@@ -19,6 +19,7 @@ def package(output: Path, native: Path, sdk: Path) -> dict:
     copies={ROOT/'run_audition.py':Path('run_audition.py'),
             ROOT/'requirements-audition.txt':Path('requirements-audition.txt'),
             ROOT/'apps/audition/README.md':Path('README_JA.md'),
+            ROOT/'apps/audition/QUICKSTART_JA.md':Path('QUICKSTART_JA.md'),
             native.resolve():Path('lib/libboiled_egg_transport.so'),
             sdk.resolve():Path('bin/boiled_egg_backend_cli'),
             sdk.resolve().parent/'libboiled_egg.so':Path('lib/libboiled_egg.so')}
