@@ -63,6 +63,17 @@ public:
             for(unsigned j=0;d.unit[j]&&j<127;++j)unit[j]=char16(d.unit[j]);
             int32 flags=d.automatable?ParameterInfo::kCanAutomate:0;
             if(i==bp::Bypass)flags|=ParameterInfo::kIsBypass;
+            // Named choices need both display and inverse text conversion for
+            // generic host editors; do not advertise structural choices as automation.
+            if(i>=bp::Backend){
+                auto* list=new StringListParameter(name,bp::vst_id(i),unit,flags|ParameterInfo::kIsList);
+                for(int value=int(d.min);value<=int(d.max);++value){
+                    String128 label{};const char* text=bp::choice(i,value);
+                    for(unsigned j=0;text[j]&&j<127;++j)label[j]=TChar(text[j]);
+                    list->appendString(label);
+                }
+                parameters.addParameter(list);continue;
+            }
             auto* p=new RangeParameter(name,bp::vst_id(i),unit,d.min,d.max,d.initial,
                 d.stepped?int32(d.max-d.min):0,flags);
             p->setPrecision(i==bp::Fine||i==bp::FormantFine?1:2);

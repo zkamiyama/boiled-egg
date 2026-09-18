@@ -57,3 +57,13 @@ if(BOILED_EGG_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     endif()
   endif()
 endif()
+
+if(BOILED_EGG_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(boiled_egg_vst3_contract_test test_vst3_contract.cpp
+    ${vst3sdk_SOURCE_DIR}/public.sdk/source/common/memorystream.cpp
+    ${vst3sdk_SOURCE_DIR}/public.sdk/source/vst/hosting/module.cpp
+    ${vst3sdk_SOURCE_DIR}/public.sdk/source/vst/hosting/module_linux.cpp)
+  target_link_libraries(boiled_egg_vst3_contract_test PRIVATE sdk_hosting sdk ${CMAKE_DL_LIBS})
+  target_link_options(boiled_egg_vst3_contract_test PRIVATE -Wl,--export-dynamic)
+  add_test(NAME boiled_egg_vst3_contract_test COMMAND boiled_egg_vst3_contract_test "${pitch_bundle}")
+endif()
