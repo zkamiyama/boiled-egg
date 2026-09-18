@@ -63,7 +63,7 @@ class MainWindow(QMainWindow):
     def __init__(self,library=None,sdk=None):
         super().__init__();self.setWindowTitle('boiled egg — Audition Lab');self.resize(1110,810)
         self.library=library;self.sdk=sdk;self.source_path=None;self.reference_path=None;self.playing=False;self.eof=False
-        self.last_speed=1.;self.duration=0.;self.native_ready=False;self.last_state={};self.comparisons=[]
+        self.last_speed=1.;self.duration=0.;self.native_ready=False;self.native_busy=False;self.last_state={};self.comparisons=[]
         self.temporary=tempfile.TemporaryDirectory(prefix='boiled-egg-audition-')
         self.pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='sdk-compare');self.job=None;self.cancel=threading.Event()
         self.worker=PlayerWorker(library);self.worker.start();self.pump=OutputPump(self.worker.audio,self)
@@ -75,7 +75,7 @@ class MainWindow(QMainWindow):
         bar=QHBoxLayout();load=QPushButton('音声を開く');load.clicked.connect(self.choose_file);bar.addWidget(load)
         demo=QPushButton('デモ素材');demo.clicked.connect(self.demo);bar.addWidget(demo)
         self.file_label=QLabel('WAV / FLAC / AIFF / OGG をドロップ');bar.addWidget(self.file_label,1);outer.addLayout(bar)
-        self.wave=Waveform();self.wave.seek.connect(self.seek);outer.addWidget(self.wave)
+        self.wave=Waveform();self.wave.seek.connect(self.seek);outer.addLayout(QVBoxLayout()) if False else None;outer.addWidget(self.wave)
         self.tabs=QTabWidget();outer.addWidget(self.tabs,1)
         native_page=QWidget();nl=QVBoxLayout(native_page)
         row=QHBoxLayout();self.mode=QComboBox()
@@ -92,7 +92,9 @@ class MainWindow(QMainWindow):
         reset=QPushButton('速度1 / ピッチ0');reset.clicked.connect(self.reset_controls);buttons.addWidget(reset);nl.addLayout(buttons)
         erow=QHBoxLayout();self.export_seconds=QDoubleSpinBox();self.export_seconds.setRange(.1,120);self.export_seconds.setValue(10);self.export_seconds.setSuffix(' 秒')
         erow.addWidget(QLabel('現在位置・現在設定で有限長WAV書出し'));erow.addWidget(self.export_seconds)
-        export=QPushButton('WAVを書出す');export.clicked.connect(self.export_native);erow.addWidget(export);nl.addLayout(erow)
+        self.native_export_button=QPushButton('WAVを書出す');self.native_export_button.clicked.connect(self.export_native);erow.addWidget(self.native_export_button);nl.addLayout(erow)
+        compare_row=QHBoxLayout();self.native_batch_button=QPushButton('6方式を現在位置・同条件で比較');self.native_batch_button.clicked.connect(self.render_all_native);compare_row.addWidget(self.native_batch_button)
+        native_cancel=QPushButton('書出し・比較を中止');native_cancel.clicked.connect(self.worker.render_cancel.set);compare_row.addWidget(native_cancel);nl.addLayout(compare_row)
         self.native_status=QLabel('待機中');self.native_status.setWordWrap(True);nl.addWidget(self.native_status);nl.addStretch()
         self.tabs.addTab(native_page,'ネイティブ再生・フリーズ')
         self.setup_compare()
@@ -170,6 +172,7 @@ class MainWindow(QMainWindow):
         if self.tabs.currentIndex()!=0:self.play_reference();return
         if self.playing:self.pause();return
         if not self.native_ready:self.show_error('音声を読み込んでください。');return
+        if self.native_busy:self.show_error('書出し・比較を完了または中止してから再生してください。');return
         self.media.stop();self.apply_settings()
         if self.pump.play():self.send('play');self.playing=True;self.play_button.setText('Ⅱ 一時停止')
         else:self.show_error('音声デバイスがありません。有限長WAV書出し、SDK比較レンダーは使えます。')
@@ -185,11 +188,38 @@ class MainWindow(QMainWindow):
         if self.pump.sink:self.pump.sink.setVolume(value)
         self.media_output.setVolume(value)
     def export_native(self):
+        if self.native_busy:self.show_error('ネイティブ書出し・比較が進行中です。');return
         if not self.native_ready:self.show_error('先に原音を読み込んでください。');return
         path,_=QFileDialog.getSaveFileName(self,'生のfloat32 WAVを書出す','','Wave (*.wav)')
         if path:
-            self.pause();self.apply_settings();self.send('export',(path,self.export_seconds.value()));self.log.appendPlainText('有限長書出し中（既存ファイルは上書きしません）')
+            self.pause();self.apply_settings();self.begin_native_job('export',(path,self.export_seconds.value()));self.log.appendPlainText('有限長書出し中（既存ファイルは上書きしません）')
+    def begin_native_job(self,kind,args):
+        self.worker.render_cancel.clear();self.native_busy=True
+        self.native_batch_button.setEnabled(False);self.native_export_button.setEnabled(False)
+        try:self.worker.command(kind,args)
+        except Exception as exc:
+            self.native_busy=False;self.native_batch_button.setEnabled(True);self.native_export_button.setEnabled(True)
+            self.show_error(str(exc))
+    def render_all_native(self):
+        if not self.native_ready:self.show_error('先に原音を読み込んでください。');return
+        if self.native_busy or (self.job and not self.job.done()):self.show_error('比較・書出しが進行中です。');return
+        self.pause();self.apply_settings()
+        directory=Path(self.temporary.name)/('native-'+uuid.uuid4().hex)
+        self.begin_native_job('compare_native',(directory,self.export_seconds.value()))
+        self.log.appendPlainText('6方式を同じ原音位置・設定から合成中。速度0は各C++方式がフリーズします。')
+    def publish_comparison(self,receipt,directory,prefix):
+        entries=[]
+        for row in receipt['results']:
+            item=dict(label=prefix+row['mode']+' — '+row['status'])
+            if row['status']=='passed':
+                item['path']=directory/row['output']
+                item['detail']=f"{receipt['source_name']} | {row['receipt']['output_frames']} frames | raw peak {row['receipt']['peak']:.3f}"
+            else:item['detail']=row['reason']
+            entries.append(item)
+        self.set_comparisons(entries)
+        self.log.appendPlainText(f"比較完了: {sum(row['status']=='passed' for row in receipt['results'])}/{len(entries)}。未対応・失敗も選択欄に残しています。")
     def render_sdk(self):
+        if self.native_busy:self.show_error('ネイティブ比較・書出しが進行中です。');return
         if not self.source_path:self.show_error('先に原音を読み込んでください。');return
         if self.job and not self.job.done():self.show_error('比較レンダーが進行中です。');return
         self.pause();self.cancel.clear();dest=Path(self.temporary.name)/(uuid.uuid4().hex+'.wav')
@@ -197,6 +227,7 @@ class MainWindow(QMainWindow):
             self.sdk_pitch.value(),self.sdk_policy.currentText(),self.sdk_formant.value(),self.sdk,self.cancel)
         self.reference_path=None;self._render_destination=dest;self._batch_directory=None;self.render_button.setEnabled(False);self.batch_button.setEnabled(False);self.reference_label.setText('SDKレンダー中…')
     def render_all_sdk(self):
+        if self.native_busy:self.show_error('ネイティブ比較・書出しが進行中です。');return
         if not self.source_path:self.show_error('先に原音を読み込んでください。');return
         if self.job and not self.job.done():self.show_error('比較レンダーが進行中です。');return
         self.pause();self.cancel.clear();dest=Path(self.temporary.name)/('comparison-'+uuid.uuid4().hex)
@@ -258,6 +289,14 @@ class MainWindow(QMainWindow):
                 if self.source_path:self.file_label.setText('原音を維持: '+self.source_path.name)
             elif kind=='ended':self.eof=True
             elif kind=='exported':self.log.appendPlainText('WAV書出し完了: '+data)
+            elif kind=='render_finished':
+                self.native_busy=False;self.native_batch_button.setEnabled(True);self.native_export_button.setEnabled(True)
+            elif kind=='render_progress':
+                self.native_status.setText(f"比較合成 {data['completed']}/{data['total']} — {data['status']}")
+            elif kind=='native_comparison':
+                directory,receipt=data
+                self.publish_comparison(receipt,Path(directory),'Native: ')
+                self.tabs.setCurrentIndex(1)
         self.pump.tick()
         if self.eof and self.worker.audio.empty() and not self.pump.pending:
             if not self.pump.sink or self.pump.sink.bytesFree()>=self.pump.sink.bufferSize():self.pause();self.eof=False;self.native_status.setText('原音終端・tail出力完了')
@@ -266,15 +305,7 @@ class MainWindow(QMainWindow):
             try:
                 receipt=job.result()
                 if self._batch_directory is not None:
-                    entries=[]
-                    for row in receipt['results']:
-                        item=dict(label=row['mode']+' — '+row['status'])
-                        if row['status']=='passed':
-                            item['path']=self._batch_directory/row['output'];item['detail']=f"{receipt['source_name']} | {row['receipt']['output_frames']} frames | raw peak {row['receipt']['peak']:.3f}"
-                        else:item['detail']=row['reason']
-                        entries.append(item)
-                    self.set_comparisons(entries)
-                    self.log.appendPlainText(f"比較完了: {sum(row['status']=='passed' for row in receipt['results'])}/5。未対応・失敗も選択欄に残しています。")
+                    self.publish_comparison(receipt,self._batch_directory,'SDK: ')
                 else:
                     self.set_comparisons([dict(path=self._render_destination,label=receipt['mode'],detail=f"{receipt['output_frames']} frames | raw peak {receipt['peak']:.3f} — 無加工の比較WAV")])
             except Exception as exc:self.show_error(str(exc));self.reference_label.setText('比較レンダー未完了（代替処理なし）')
