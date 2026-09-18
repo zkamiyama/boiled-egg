@@ -1,0 +1,63 @@
+name: audition-app
+on:
+  push:
+    paths: ['apps/audition/**', 'sdk/transport/**', 'run_audition.py', 'requirements-audition.txt', 'scripts/build_audition.sh', '.github/workflows/audition-app.yml']
+  pull_request:
+    paths: ['apps/audition/**', 'sdk/transport/**', 'run_audition.py', 'requirements-audition.txt', 'scripts/build_audition.sh', '.github/workflows/audition-app.yml']
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  QT_QPA_PLATFORM: offscreen
+  OPENBLAS_NUM_THREADS: 1
+  OMP_NUM_THREADS: 1
+jobs:
+  standalone:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pinned GUI dependencies and build native code
+        run: |
+          mkdir validation
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libopengl0 libpulse0 libsndfile1 libxcb-cursor0 libxkbcommon-x11-0
+          python -m pip install -r requirements-audition.txt
+          python -m pip freeze > validation/PYTHON_VERSIONS.txt
+          bash scripts/build_audition.sh | tee validation/build.log
+      - name: Controls, worker, Qt writes and all five actual SDK modes
+        run: |
+          export BOILED_EGG_TRANSPORT_LIBRARY="$PWD/build-transport/libboiled_egg_transport.so"
+          export BOILED_EGG_SDK_CLI="$PWD/build-sdk/boiled_egg_backend_cli"
+          python -W error::ResourceWarning -m unittest discover -s apps/audition -p 'test_*.py' -v 2>&1 | tee validation/app-tests.log
+          python run_audition.py --smoke --screenshot validation/standalone.png 2>&1 | tee validation/gui.log
+          test -s validation/standalone.png
+      - name: Independent held-tone pitch and memory checks
+        run: |
+          export BOILED_EGG_TRANSPORT_LIBRARY="$PWD/build-transport/libboiled_egg_transport.so"
+          python apps/audition/assess_freeze.py --output validation/freeze | tee validation/freeze.log
+      - name: Exact tested source identity
+        if: always()
+        run: |
+          mkdir -p validation
+          git rev-parse HEAD > validation/COMMIT.txt
+          git rev-parse HEAD^{tree} > validation/TREE.txt
+          git archive --format=tar.gz --prefix=boiled-egg/ HEAD > validation/source.tar.gz
+          git ls-files -z | xargs -0 sha256sum > validation/SOURCE_SHA256SUMS
+          if test -f build-transport/libboiled_egg_transport.so; then sha256sum build-transport/libboiled_egg_transport.so build-sdk/boiled_egg_backend_cli build-sdk/libboiled_egg.so > validation/BINARY_SHA256SUMS; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: audition-app-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7
