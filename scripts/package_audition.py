@@ -20,6 +20,7 @@ def package(output: Path, native: Path, sdk: Path) -> dict:
             ROOT/'requirements-audition.txt':Path('requirements-audition.txt'),
             ROOT/'apps/audition/README.md':Path('README_JA.md'),
             ROOT/'apps/audition/QUICKSTART_JA.md':Path('QUICKSTART_JA.md'),
+            ROOT/'apps/audition/LANGUAGES.md':Path('LANGUAGES.md'),
             native.resolve():Path('lib/libboiled_egg_transport.so'),
             sdk.resolve():Path('bin/boiled_egg_backend_cli'),
             sdk.resolve().parent/'libboiled_egg.so':Path('lib/libboiled_egg.so')}
@@ -44,6 +45,7 @@ fi
            for p in sorted(output.rglob('*')) if p.is_file()}
     manifest=dict(schema='boiled-egg.audition-linux-package.v1',files=files,
                   builder_python=sys.version.split()[0],builder_platform=platform.platform(),
+                  languages=['ja','en'],
                   dependencies='Install requirements-audition.txt; system audio/Qt libraries required',
                   hardware_playback_verified=False)
     (output/'MANIFEST.json').write_text(json.dumps(manifest,indent=2)+'\n')
