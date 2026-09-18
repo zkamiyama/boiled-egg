@@ -106,11 +106,11 @@ CATALOG = {
     'native_3': ('WSOLA — 時間領域保持', 'WSOLA — time-domain hold'),
     'native_4': ('WSOLA Transient — 時間領域保持', 'WSOLA Transient — time-domain hold'),
     'native_5': ('WSOLA Efficient — 時間領域保持', 'WSOLA Efficient — time-domain hold'),
-    'sdk_0': ('WSOLA General（一般）', 'WSOLA General'),
-    'sdk_1': ('WSOLA Transient（打撃音）', 'WSOLA Transient'),
-    'sdk_2': ('WSOLA Efficient（省CPU）', 'WSOLA Efficient'),
-    'sdk_3': ('PV General（一般）', 'PV General'),
-    'sdk_4': ('PV Transient（打撃音）', 'PV Transient'),
+    'sdk_0': ('SDK WSOLA / General（一般）', 'SDK WSOLA / General'),
+    'sdk_1': ('SDK WSOLA / Transient（打撃音）', 'SDK WSOLA / Transient'),
+    'sdk_2': ('SDK WSOLA / Efficient（省CPU）', 'SDK WSOLA / Efficient'),
+    'sdk_3': ('SDK PV / General（一般）', 'SDK PV / General'),
+    'sdk_4': ('SDK PV / Transient（打撃音）', 'SDK PV / Transient'),
     'audio_filter': ('音声 (*.wav *.flac *.aiff *.aif *.ogg);;すべてのファイル (*)', 'Audio (*.wav *.flac *.aiff *.aif *.ogg);;All files (*)'),
     'wave_filter': ('WAV音声 (*.wav)', 'Wave (*.wav)'),
 }
@@ -134,6 +134,8 @@ DIAGNOSTICS = {
     'Export must not overwrite an existing file': '既存のファイルには上書きできません。',
     'Export duration must be .1..120 seconds, including freeze': '書出し時間はフリーズを含め0.1〜120秒で指定してください。',
     'Command queue full; wait for current load/render to finish': 'コマンド待ち行列が満杯です。現在の読込み・合成の完了後に操作してください。',
+    'Existing WSOLA does not preserve formants; no fallback': '既存WSOLAはフォルマント保持に未対応です。代替処理はしません。',
+    'Formant shift requires an enabled policy': 'フォルマント変更には保持方式の有効化が必要です。',
 }
 
 @dataclass(frozen=True)
@@ -164,7 +166,7 @@ class I18n:
             return f'{explanation}\n[original] {value.raw}' if explanation else value.raw
         if not isinstance(value, Message):
             return str(value)
-        pair = CATALOG[value.key]  # Missing internal keys must fail tests, not silently mask a typo.
+        pair = CATALOG[value.key]
         values = {k: self.text(v) if isinstance(v, (Message, Diagnostic)) else v
                   for k, v in value.values.items()}
         return pair[LANGUAGES.index(self.language)].format(**values)
@@ -180,17 +182,14 @@ class I18n:
         return self.preferences.status() == QSettings.Status.NoError
 
     def install_qt_translation(self) -> bool:
-        """Qt-owned dialog strings use the shipped Qt catalog when available.
-
-        Native OS dialogs and external library error strings may use OS language.
-        Never download translations or write them into the application package.
-        """
+        """Use the shipped Qt dialog catalog; native OS dialogs may differ."""
         app = QApplication.instance()
         if app is None:
             return False
         old = getattr(app, '_audition_qt_translator', None)
         if old is not None:
             app.removeTranslator(old)
+            old.deleteLater()
         app._audition_qt_translator = None
         if self.language == 'en':
             return True
