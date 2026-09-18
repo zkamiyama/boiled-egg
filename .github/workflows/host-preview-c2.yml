@@ -52,6 +52,40 @@ jobs:
           module=$(find build/VST3 -name '*.so' -type f | head -1)
           test -n "$module"
           if ldd "$module" | grep -q libboiled_egg; then exit 1; fi
+      - uses: actions/checkout@v4
+        if: matrix.compiler == 'gcc' && matrix.standard == 20 && matrix.spectral == 'ON'
+        with:
+          repository: zkamiyama/boiled-egg
+          ref: c6cb312903006e3a1ca24c034c291ef0e8fc9d81
+          path: .legacy
+          persist-credentials: false
+      - name: Compare actual legacy CLAP and VST3 modules without shared processor oracles
+        if: matrix.compiler == 'gcc' && matrix.standard == 20 && matrix.spectral == 'ON'
+        run: |
+          cmake -S .legacy -B build-legacy -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_STANDARD=20 -DBOILED_EGG_BUILD_SHARED=OFF \
+            -DBOILED_EGG_BUILD_TESTS=OFF -DBOILED_EGG_BUILD_TOOLS=OFF -DBOILED_EGG_BUILD_BENCH=OFF \
+            -DBOILED_EGG_BUILD_CLAP=ON -DBOILED_EGG_BUILD_VST3=ON \
+            -DFETCHCONTENT_SOURCE_DIR_CLAP_HEADERS="$PWD/build/_deps/clap_headers-src" \
+            -DFETCHCONTENT_SOURCE_DIR_VST3SDK="$PWD/build/_deps/vst3sdk-src"
+          cmake --build build-legacy --target boiled_egg_clap boiled_egg_vst3 -j2 2>&1 | tee validation/legacy-build.log
+          g++ -O2 -std=c++20 quality/host_preview/legacy_clap.cpp \
+            -Ibuild/_deps/clap_headers-src/include -ldl -o validation/legacy-clap-probe
+          validation/legacy-clap-probe build-legacy/adapters/clap/boiled_egg.clap > validation/legacy-clap-before.csv
+          validation/legacy-clap-probe build/adapters/clap/boiled_egg.clap > validation/legacy-clap-after.csv
+          build/bin/Release/boiled_egg_legacy_vst3_probe "$PWD/build-legacy/VST3/Release/boiled egg.vst3" > validation/legacy-vst-before.csv
+          build/bin/Release/boiled_egg_legacy_vst3_probe "$PWD/build/VST3/Release/boiled egg.vst3" > validation/legacy-vst-after.csv
+          for format in clap vst; do
+            python3 quality/host_preview/compare_legacy.py "validation/legacy-$format-before.csv" \
+              "validation/legacy-$format-after.csv" --output "validation/legacy-$format-result.json"
+          done
+          python3 -W error::ResourceWarning -m unittest discover -s quality/host_preview -p 'test_*.py' -v 2>&1 | tee validation/legacy-audit-tests.log
+          build/bin/Release/boiled_egg_vst3_contract_test "$PWD/build/VST3/Release/boiled egg.vst3" | tee validation/vst3-contract.log
+          git -C .legacy rev-parse HEAD > validation/LEGACY_COMMIT.txt
+          sha256sum build-legacy/adapters/clap/boiled_egg.clap build/adapters/clap/boiled_egg.clap \
+            "build-legacy/VST3/Release/boiled egg.vst3/Contents/x86_64-linux/boiled egg.so" \
+            "build/VST3/Release/boiled egg.vst3/Contents/x86_64-linux/boiled egg.so" \
+            > validation/PLUGIN_BINARIES_SHA256SUMS
       - name: Immutable source and dependency provenance
         if: always()
         run: |
