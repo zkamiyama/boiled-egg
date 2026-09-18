@@ -1,9 +1,9 @@
 name: audition-app
 on:
   push:
-    paths: ['apps/audition/**', 'sdk/transport/**', 'run_audition.py', 'requirements-audition.txt', 'scripts/build_audition.sh', '.github/workflows/audition-app.yml']
+    paths: ['apps/audition/**', 'sdk/transport/**', 'run_audition.py', 'requirements-audition.txt', 'scripts/build_audition.sh', 'scripts/package_audition.py', '.github/workflows/audition-app.yml']
   pull_request:
-    paths: ['apps/audition/**', 'sdk/transport/**', 'run_audition.py', 'requirements-audition.txt', 'scripts/build_audition.sh', '.github/workflows/audition-app.yml']
+    paths: ['apps/audition/**', 'sdk/transport/**', 'run_audition.py', 'requirements-audition.txt', 'scripts/build_audition.sh', 'scripts/package_audition.py', '.github/workflows/audition-app.yml']
 permissions:
   contents: read
 defaults:
@@ -45,6 +45,20 @@ jobs:
         run: |
           export BOILED_EGG_TRANSPORT_LIBRARY="$PWD/build-transport/libboiled_egg_transport.so"
           python apps/audition/assess_freeze.py --output validation/freeze | tee validation/freeze.log
+          python apps/audition/assess_range.py --output validation/range | tee validation/range.log
+      - name: Relocated package and failed-load negative control
+        run: |
+          python scripts/package_audition.py --output "$RUNNER_TEMP/audition-package"
+          unset BOILED_EGG_TRANSPORT_LIBRARY BOILED_EGG_SDK_CLI
+          python -W error::ResourceWarning -m unittest discover -s "$RUNNER_TEMP/audition-package/apps/audition" -p 'test_*.py' -v 2>&1 | tee validation/relocated-tests.log
+          python "$RUNNER_TEMP/audition-package/run_audition.py" --smoke 2>&1 | tee validation/relocated-gui.log
+          if python "$RUNNER_TEMP/audition-package/run_audition.py" --smoke --library "$RUNNER_TEMP/missing-native.so" > validation/negative-gui.log 2>&1; then
+            echo 'Missing native library was incorrectly accepted'; exit 1
+          else
+            status=$?
+            test "$status" -eq 1
+          fi
+          cp "$RUNNER_TEMP/audition-package/MANIFEST.json" validation/PACKAGE_MANIFEST.json
       - name: Exact tested source identity
         if: always()
         run: |
