@@ -111,8 +111,20 @@ CATALOG = {
     'sdk_2': ('SDK WSOLA / Efficient（省CPU）', 'SDK WSOLA / Efficient'),
     'sdk_3': ('SDK PV / General（一般）', 'SDK PV / General'),
     'sdk_4': ('SDK PV / Transient（打撃音）', 'SDK PV / Transient'),
+    'audio_format_unsupported': ('選択デバイスはこのfloat32形式に未対応です。出力先・レートを変更してください。WAV書出しは利用できます。', 'The selected device does not support this float32 format. Choose another output device or sample rate. WAV export remains available.'),
+    'audio_start_failed': ('音声デバイスを開始できません。', 'Could not start the audio device.'),
+    'audio_stopped': ('音声デバイスが停止しました。出力先を選び直してください。原音は保持しています。', 'The audio device stopped. Select an output device again. The source is retained.'),
+    'audio_write_failed': ('音声出力の書込みに失敗しました。', 'Writing to the audio output failed.'),
     'audio_filter': ('音声 (*.wav *.flac *.aiff *.aif *.ogg);;すべてのファイル (*)', 'Audio (*.wav *.flac *.aiff *.aif *.ogg);;All files (*)'),
     'wave_filter': ('WAV音声 (*.wav)', 'Wave (*.wav)'),
+}
+
+# OutputPump owns these exact Japanese diagnostics. Translate their presentation
+# without changing its signals or buffer/recovery behavior. This is not a rewrite
+# of arbitrary external error text; unknown diagnostics remain verbatim below.
+OWNED_DIAGNOSTICS = {
+    CATALOG[key][0]: key for key in (
+        'audio_format_unsupported', 'audio_start_failed', 'audio_stopped', 'audio_write_failed')
 }
 
 # Native/worker/SDK errors remain their original machine strings outside the UI.
@@ -162,6 +174,9 @@ class I18n:
 
     def text(self, value: str | Message | Diagnostic) -> str:
         if isinstance(value, Diagnostic):
+            owned_key = OWNED_DIAGNOSTICS.get(value.raw)
+            if owned_key is not None:
+                return self.text(message(owned_key))
             explanation = DIAGNOSTICS.get(value.raw) if self.language == 'ja' else None
             return f'{explanation}\n[original] {value.raw}' if explanation else value.raw
         if not isinstance(value, Message):
