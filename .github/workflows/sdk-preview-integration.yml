@@ -63,7 +63,8 @@ jobs:
         if: matrix.compiler == 'gcc' && matrix.standard == 20
         with:
           repository: zkamiyama/boiled-egg
-          ref: 124669dc0885d6eded9076173f22a78c7adb5f39
+          # Explicitly reviewed C2 adapter snapshot: named-list fix and independent state/legacy probes.
+          ref: c85a367c9ba47b9cbff0233a916530853c6ec61e
           path: .host-reference
           persist-credentials: false
       - name: Execute unchanged old clients with three different SDK libraries
