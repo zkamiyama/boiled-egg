@@ -63,6 +63,7 @@ class PlayerWorker(threading.Thread):
         self.handle=candidate;self.settings=settings;self.source=source;self.source_rate=rate
         if old:old.close()
         self.messages.put(('ready',dict(rate=settings.output_rate,channels=source.shape[1],epoch=self.epoch)))
+        self.messages.put(('position',dict(source_seconds=self.handle.info()['source_position']/rate)))
     def _load(self,path):
         info=sf.info(path)
         if info.channels not in (1,2):raise ValueError('Player accepts mono/stereo files; no silent downmix')
@@ -93,6 +94,7 @@ class PlayerWorker(threading.Thread):
                 self.handle.seek(float(value)*self.source_rate)
                 self.playing=False;self.epoch+=1;self.clear_audio()
                 self.messages.put(('ready',dict(rate=self.settings.output_rate,channels=self.source.shape[1],epoch=self.epoch)))
+                self.messages.put(('position',dict(source_seconds=self.handle.info()['source_position']/self.source_rate)))
         elif kind=='export':self._export(*value)
         else:raise ValueError('Unknown worker command')
     def _export(self,path,seconds):
