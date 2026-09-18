@@ -1,10 +1,9 @@
 """Bounded-buffer file player. DSP and file I/O stay off the Qt event thread."""
 from __future__ import annotations
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 import math
 import queue
 import threading
-import time
 from pathlib import Path
 import numpy as np
 import soundfile as sf
@@ -43,22 +42,34 @@ class PlayerWorker(threading.Thread):
         while True:
             try:self.audio.get_nowait()
             except queue.Empty:break
-    def _rebuild(self, position=0.):
+    def _rebuild(self, position=0., settings=None, source=None, rate=None):
+        # Construct a candidate before publishing it. An unsupported selection
+        # must not destroy the working source/handle or alter saved controls.
+        settings=self.settings if settings is None else settings
+        source=self.source if source is None else source
+        rate=self.source_rate if rate is None else rate
+        if source is None:
+            self.settings=settings
+            return
+        candidate=Transport(source,rate,settings.mode,settings.policy,settings.output_rate,self.library)
+        try:
+            candidate.set(settings.speed,settings.pitch,settings.formant)
+            candidate.seek(min(position,len(source)))
+        except BaseException:
+            candidate.close()
+            raise
+        old=self.handle
         self.playing=False;self.epoch+=1;self.clear_audio()
-        if self.handle:self.handle.close();self.handle=None
-        if self.source is None:return
-        self.handle=Transport(self.source,self.source_rate,self.settings.mode,self.settings.policy,
-                              self.settings.output_rate,self.library)
-        self.handle.set(self.settings.speed,self.settings.pitch,self.settings.formant)
-        self.handle.seek(min(position,len(self.source)))
-        self.messages.put(('ready',dict(rate=self.settings.output_rate,channels=self.source.shape[1],epoch=self.epoch)))
+        self.handle=candidate;self.settings=settings;self.source=source;self.source_rate=rate
+        if old:old.close()
+        self.messages.put(('ready',dict(rate=settings.output_rate,channels=source.shape[1],epoch=self.epoch)))
     def _load(self,path):
         info=sf.info(path)
         if info.channels not in (1,2):raise ValueError('Player accepts mono/stereo files; no silent downmix')
         if info.frames*info.channels>32_000_000:raise ValueError('File exceeds player limit of32 million scalar samples')
         x,rate=sf.read(path,dtype='float32',always_2d=True)
         if not len(x) or not np.isfinite(x).all():raise ValueError('Empty/nonfinite file')
-        self.source=x;self.source_rate=rate;self._rebuild()
+        self._rebuild(source=x,rate=rate)
         step=max(1,len(x)//1000);self.messages.put(('loaded',dict(path=str(path),rate=rate,frames=len(x),waveform=x[::step].copy())))
     def _apply(self,kind,value):
         if kind=='load':self._load(Path(value))
@@ -66,18 +77,21 @@ class PlayerWorker(threading.Thread):
             if self.handle:self.playing=True
         elif kind=='pause':self.playing=False
         elif kind=='settings':
-            before=self.settings;self.settings=value
+            if not isinstance(value,Settings):raise TypeError('Settings instance required')
+            before=self.settings
             if self.handle:
                 structural=(before.mode,before.policy,before.output_rate)!=(value.mode,value.policy,value.output_rate)
-                if structural:self._rebuild(self.handle.info()['source_position'])
+                if structural:self._rebuild(self.handle.info()['source_position'],settings=value)
                 else:
                     # Freeze stops the source clock immediately at the next
                     # owned block; pitch/formant smoothing follows output time.
                     self.handle.render(0,[(0,0,value.speed,0),(0,1,value.pitch,round(.02*value.output_rate)),(0,2,value.formant,round(.02*value.output_rate))])
+                    self.settings=value
+            else:self.settings=value
         elif kind=='seek':
-            self.playing=False;self.epoch+=1;self.clear_audio()
             if self.handle:
                 self.handle.seek(float(value)*self.source_rate)
+                self.playing=False;self.epoch+=1;self.clear_audio()
                 self.messages.put(('ready',dict(rate=self.settings.output_rate,channels=self.source.shape[1],epoch=self.epoch)))
         elif kind=='export':self._export(*value)
         else:raise ValueError('Unknown worker command')
