@@ -2,7 +2,7 @@
 
 Linux-first research scaffold for a real-time pitch-shift + time-stretch SDK, with the long-term target of commercial-quality polyphonic processing.
 
-> **Status:** v0.1.2 DAW-foundation checkpoint. The host/ABI/realtime contract is now exercised through real CLAP and VST3 adapters; DSP quality work continues separately. This repository does **not** claim perceptual parity with zplane elastique yet.
+> **Status:** C1/C2 opt-in SDK and one-voice host preview. WSOLA remains the default. The formant-preserving spectral SDK, continuous pitch and explicit ramps are available behind an experimental build option. CLAP/VST3 expose extended controls and a Linux X11 editor. This repository does **not** claim perceptual parity with zplane elastique.
 
 Canonical names: repository slug **`boiled-egg`**, CMake target/package **`boiled_egg`**, C++ namespace **`boiled_egg`**, and public C ABI prefix **`boiledegg_`**.
 
@@ -73,7 +73,13 @@ cmake --build build-vst3 --target boiled_egg_vst3
 
 The build pins the official **Steinberg VST3 SDK 3.8.0** commit used by CI. The SDK's `moduleinfotool` and official **VST3 validator** run during the plugin build. CI also checks that the VST3 bundle is self-contained and does not depend on an external `libboiled_egg`.
 
-Both reference adapters currently expose one stereo pitch parameter (±24 semitones) and no GUI. Their purpose is to continuously prove that the core's lifecycle, automation, state, latency/tail and threading contracts map to real plugin APIs while DSP-quality work continues.
+Both adapters expose pitch/fine, formant/fine, wet/dry, voice volume/pan, bypass, backend, quality and formant policy. The one-voice Linux X11/XEmbed editor is built when X11 is available and `BOILED_EGG_PLUGIN_UI=ON`. There is no multi-voice Add operation or Windows/macOS native editor in this checkpoint.
+
+The original plugin IDs, pitch IDs and normalized ±24-semitone range are retained. Old pitch-only state loads with WSOLA semantics; new saves use version 2 and are not promised readable by old binaries. Back up existing plugins and use a project copy when testing the preview.
+
+WSOLA remains selected by default. Spectral processing requires `-DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON` and explicit selection of `Spectral PV (preview)`. Its combined pitch range is ±12 semitones. Structural backend/quality/policy changes request host reactivation rather than rebuilding DSP in the audio callback. Wet/dry and bypass use the reported delay; at 48 kHz the Transient spectral configuration reports 2,112 samples (44 ms). Small callback support is not a claim of low-latency live monitoring.
+
+See [`docs/HOST_PREVIEW_C2.md`](docs/HOST_PREVIEW_C2.md) for scope and [`docs/benchmarks/HOST_C2_FINAL_2026-09-18.md`](docs/benchmarks/HOST_C2_FINAL_2026-09-18.md) for actual-module compatibility, state and GUI checks. Automated host harnesses are not a manual qualification of every DAW.
 
 ## Build
 
@@ -151,7 +157,7 @@ python3 eval/make_blind_manifest.py results/external/systems
 
 ### Current Linux checkpoint
 
-The v0.1.2 CI gate currently covers:
+The inherited DAW-foundation CI gate covers:
 
 - GCC and Clang, C++20 and C++23.
 - shared and static SDK consumer builds.
@@ -175,7 +181,7 @@ For external algorithm baselines, `scripts/fetch_optional_baselines.sh` fetches 
 
 ## Resume development later
 
-Start with **`docs/RESUME.md`**. It records the current architecture, commands, constraints and next DSP milestones. With the v0.1.2 DAW foundation in place, the next major work returns to objective/listening quality against the supplied MOS/Elastique dataset: phase-vocoder phase coherence, transient handling, HPSS/hybrid selection and formant/spectral-envelope preservation.
+Start with roadmap **Issue #15**, integration **Issue #18**, `docs/SDK_PREVIEW.md` and `docs/HOST_PREVIEW_C2.md`. The earlier `docs/RESUME.md` retains historical research milestones, not an instruction to repeat them. Objective defect correction and API/host compatibility are separate from general natural-audio quality selection. Further algorithm research should address a demonstrated use-case deficiency; frozen perceptual predictors require independent validation before driving adoption.
 
 Other useful documents:
 
