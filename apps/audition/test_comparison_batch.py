@@ -71,6 +71,16 @@ class BatchTests(unittest.TestCase):
             out.write_bytes(b'changed')
             with self.assertRaises(ValueError):batch.save_result(out,Path(d)/'bad.wav')
             self.assertFalse((Path(d)/'bad.wav').exists())
+    def test_export_cannot_disguise_compressed_audio_as_wav(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)/'external.flac';sf.write(p,np.zeros(128),48000)
+            with self.assertRaises(ValueError):batch.save_result(p,Path(d)/'wrong.wav')
+            self.assertFalse((Path(d)/'wrong.wav').exists())
+    def test_nonfinite_batch_fails_before_directory_creation(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)/'tone.wav';write_tone(p);out=Path(d)/'invalid'
+            with self.assertRaises(ValueError):batch.render_batch(p,out,float('nan'),0)
+            self.assertFalse(out.exists())
     def test_paused_seek_updates_visible_anchor_without_audio_device(self):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d)/'tone.wav';write_tone(p);w=MainWindow()

@@ -6,6 +6,8 @@ manifest instead of being dropped or replaced by a different algorithm.
 """
 from __future__ import annotations
 import json
+import math
+import soundfile as sf
 import shutil
 import threading
 from pathlib import Path
@@ -14,6 +16,8 @@ import sdk_compare
 
 def render_batch(source, directory, speed, pitch, policy='off', formant=0.,
                  executable=None, cancel: threading.Event | None = None):
+    if not all(math.isfinite(v) for v in (speed,pitch,formant)):
+        raise ValueError('Finite comparison controls required')
     source = Path(source).resolve(strict=True)
     directory = Path(directory).resolve()
     directory.mkdir(parents=True, exist_ok=False)
@@ -64,6 +68,12 @@ def render_batch(source, directory, speed, pitch, policy='off', formant=0.,
 def save_result(source, destination):
     """Copy a selected raw output and its receipt, never overwrite either file."""
     source, destination = Path(source), Path(destination)
+    try:
+        container_format=sf.info(source).format
+    except RuntimeError as exc:
+        raise ValueError('Selected audio cannot be read') from exc
+    if container_format not in ('WAV','WAVEX','RF64'):
+        raise ValueError('Save WAV applies to WAV results only; external compressed files are not relabeled')
     old_receipt = source.with_suffix(source.suffix+'.json')
     new_receipt = destination.with_suffix(destination.suffix+'.json')
     if any(p.exists() or p.is_symlink() for p in (destination, new_receipt)):
