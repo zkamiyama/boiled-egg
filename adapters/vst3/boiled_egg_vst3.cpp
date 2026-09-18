@@ -1,284 +1,247 @@
-#include <boiled_egg/boiled_egg.h>
-
-#include "base/source/fstreamer.h"
+#include "../common/pitch_processor.hpp"
+#include "../common/pitch_editor.hpp"
 #include "pluginterfaces/base/ibstream.h"
 #include "pluginterfaces/vst/ivstparameterchanges.h"
 #include "public.sdk/source/main/pluginfactory.h"
 #include "public.sdk/source/vst/vstsinglecomponenteffect.h"
-
+#ifdef BOILED_EGG_PLUGIN_X11
+#include "public.sdk/source/common/pluginview.h"
+#include "pluginterfaces/base/keycodes.h"
+#include <X11/keysym.h>
+#endif
 #include <algorithm>
-#include <atomic>
-#include <bit>
+#include <array>
 #include <cmath>
-#include <cstdint>
 #include <cstring>
+#include <memory>
+#include <vector>
 
 namespace Steinberg::Vst {
-namespace {
-
-constexpr ParamID kPitchParamId = 1000;
-constexpr uint32 kStateMagic = 0x42454747u; // BEGG
-constexpr int32 kStateVersion = 1;
-
-constexpr float normalizedToSemitones(ParamValue value) noexcept {
-    return static_cast<float>(value * 48.0 - 24.0);
-}
-constexpr ParamValue semitonesToNormalized(float value) noexcept {
-    return static_cast<ParamValue>((value + 24.0f) / 48.0f);
-}
-uint32_t floatBits(float value) noexcept { return std::bit_cast<uint32_t>(value); }
-float bitsFloat(uint32_t bits) noexcept { return std::bit_cast<float>(bits); }
-
-uint32 defaultWindow(double sampleRate) noexcept {
-    return sampleRate >= 88200.0 ? 1536u : 1024u;
-}
-uint32 defaultLatency(double sampleRate) noexcept {
-    const uint32 window = defaultWindow(sampleRate);
-    const uint32 search = window / 8u;
-    return window + search + window / 2u;
-}
-
-} // namespace
+namespace bp = boiled_egg::plugin;
+class BoiledEggVst3;
+#ifdef BOILED_EGG_PLUGIN_X11
+class PitchView final : public CPluginView, public Linux::ITimerHandler {
+public:
+    explicit PitchView(BoiledEggVst3* owner);
+    ~PitchView() override;
+    tresult PLUGIN_API isPlatformTypeSupported(FIDString type) override;
+    tresult PLUGIN_API attached(void* parent,FIDString type) override;
+    tresult PLUGIN_API removed() override;
+    tresult PLUGIN_API setFrame(IPlugFrame* frame) override;
+    tresult PLUGIN_API onSize(ViewRect* size) override;
+    tresult PLUGIN_API onKeyDown(char16 key,int16 keyCode,int16 modifiers) override;
+    tresult PLUGIN_API onKeyUp(char16,int16,int16) override {return kResultFalse;}
+    tresult PLUGIN_API onFocus(TBool focused) override {if(!focused&&editor_)editor_->focus_lost();return kResultOk;}
+    tresult PLUGIN_API canResize() override {return kResultTrue;}
+    tresult PLUGIN_API checkSizeConstraint(ViewRect* size) override;
+    void PLUGIN_API onTimer() override;
+    OBJ_METHODS(PitchView,CPluginView)
+    DEFINE_INTERFACES
+        DEF_INTERFACE(Linux::ITimerHandler)
+    END_DEFINE_INTERFACES(CPluginView)
+    REFCOUNT_METHODS(CPluginView)
+private:
+    void unregister() noexcept;
+    BoiledEggVst3* owner_;
+    std::unique_ptr<bp::PitchEditor> editor_;
+    IPtr<Linux::IRunLoop> loop_;
+    bool registered_{};
+};
+#endif
 
 class BoiledEggVst3 final : public SingleComponentEffect {
 public:
-    BoiledEggVst3() = default;
-    ~BoiledEggVst3() override { destroyCore(); }
-
-    static FUnknown* createInstance(void*) { return static_cast<IAudioProcessor*>(new BoiledEggVst3); }
-
+    static FUnknown* createInstance(void*) {return static_cast<IAudioProcessor*>(new BoiledEggVst3);}
     tresult PLUGIN_API initialize(FUnknown* context) override {
-        const tresult result = SingleComponentEffect::initialize(context);
-        if (result != kResultOk) return result;
-        addAudioInput(STR16("Stereo In"), SpeakerArr::kStereo);
-        addAudioOutput(STR16("Stereo Out"), SpeakerArr::kStereo);
-        auto* pitch = new RangeParameter(STR16("Pitch"), kPitchParamId, STR16("st"),
-                                         -24.0, 24.0, 0.0, 0,
-                                         ParameterInfo::kCanAutomate);
-        pitch->setPrecision(2);
-        parameters.addParameter(pitch);
-        pitchNormalizedBits_.store(floatBits(0.5f), std::memory_order_relaxed);
+        auto status=SingleComponentEffect::initialize(context);
+        if(status!=kResultOk)return status;
+        addAudioInput(STR16("Stereo In"),SpeakerArr::kStereo);
+        addAudioOutput(STR16("Stereo Out"),SpeakerArr::kStereo);
+        for(unsigned i=0;i<bp::Count;++i){
+            const auto& d=bp::parameters[i];String128 name{},unit{};
+            for(unsigned j=0;d.name[j]&&j<127;++j)name[j]=char16(d.name[j]);
+            for(unsigned j=0;d.unit[j]&&j<127;++j)unit[j]=char16(d.unit[j]);
+            int32 flags=d.automatable?ParameterInfo::kCanAutomate:0;
+            if(i==bp::Bypass)flags|=ParameterInfo::kIsBypass;
+            // Named choices need both display and inverse text conversion for
+            // generic host editors; do not advertise structural choices as automation.
+            if(i>=bp::Backend){
+                auto* list=new StringListParameter(name,bp::vst_id(i),unit,flags|ParameterInfo::kIsList);
+                for(int value=int(d.min);value<=int(d.max);++value){
+                    String128 label{};const char* text=bp::choice(i,value);
+                    for(unsigned j=0;text[j]&&j<127;++j)label[j]=TChar(text[j]);
+                    list->appendString(label);
+                }
+                parameters.addParameter(list);continue;
+            }
+            auto* p=new RangeParameter(name,bp::vst_id(i),unit,d.min,d.max,d.initial,
+                d.stepped?int32(d.max-d.min):0,flags);
+            p->setPrecision(i==bp::Fine||i==bp::FormantFine?1:2);
+            parameters.addParameter(p);
+        }
         return kResultOk;
     }
-
-    tresult PLUGIN_API terminate() override {
-        destroyCore();
-        return SingleComponentEffect::terminate();
-    }
-
+    tresult PLUGIN_API terminate() override {processor_.deactivate();processing_=false;return SingleComponentEffect::terminate();}
     tresult PLUGIN_API setupProcessing(ProcessSetup& setup) override {
-        if (!std::isfinite(setup.sampleRate) || setup.sampleRate < 8000.0 ||
-            setup.sampleRate > 384000.0 || setup.maxSamplesPerBlock <= 0 ||
-            setup.maxSamplesPerBlock > 65536) return kInvalidArgument;
+        if(processor_.is_active()||!std::isfinite(setup.sampleRate)||setup.sampleRate<8000||setup.sampleRate>384000||
+            std::floor(setup.sampleRate)!=setup.sampleRate||setup.maxSamplesPerBlock<1||setup.maxSamplesPerBlock>65536||
+            setup.symbolicSampleSize!=kSample32)return kInvalidArgument;
+        try {zeros_.assign(static_cast<std::size_t>(setup.maxSamplesPerBlock),0.f);}catch(...){return kOutOfMemory;}
+        processor_.rate_hint(static_cast<unsigned>(setup.sampleRate));
         return SingleComponentEffect::setupProcessing(setup);
     }
-
-    tresult PLUGIN_API setBusArrangements(SpeakerArrangement* inputs, int32 numIns,
-                                          SpeakerArrangement* outputs, int32 numOuts) override {
-        if (!inputs || !outputs || numIns != 1 || numOuts != 1 ||
-            SpeakerArr::getChannelCount(inputs[0]) != 2 ||
-            SpeakerArr::getChannelCount(outputs[0]) != 2) return kResultFalse;
-        return SingleComponentEffect::setBusArrangements(inputs, numIns, outputs, numOuts);
+    tresult PLUGIN_API setBusArrangements(SpeakerArrangement* in,int32 ni,SpeakerArrangement* out,int32 no) override {
+        if(!in||!out||ni!=1||no!=1||in[0]!=SpeakerArr::kStereo||out[0]!=SpeakerArr::kStereo)return kResultFalse;
+        return SingleComponentEffect::setBusArrangements(in,ni,out,no);
     }
-
-    tresult PLUGIN_API canProcessSampleSize(int32 symbolicSampleSize) override {
-        return symbolicSampleSize == kSample32 ? kResultTrue : kResultFalse;
+    tresult PLUGIN_API canProcessSampleSize(int32 size) override {return size==kSample32?kResultTrue:kResultFalse;}
+    tresult PLUGIN_API setActive(TBool active) override {
+        if(active&&!processor_.is_active()){
+            if(!std::isfinite(processSetup.sampleRate)||processSetup.maxSamplesPerBlock<1)return kResultFalse;
+            try {if(!processor_.activate(static_cast<unsigned>(processSetup.sampleRate),static_cast<unsigned>(processSetup.maxSamplesPerBlock)))return kResultFalse;}
+            catch(...){return kOutOfMemory;}
+        } else if(!active){processing_=false;processor_.deactivate();}
+        return SingleComponentEffect::setActive(active);
     }
-
-    tresult PLUGIN_API setActive(TBool state) override {
-        if (state) {
-            if (core_) return kResultOk;
-            if (!std::isfinite(processSetup.sampleRate) || processSetup.sampleRate < 8000.0 ||
-                processSetup.maxSamplesPerBlock <= 0) return kResultFalse;
-            auto config = boiledegg_default_config(static_cast<uint32_t>(std::lround(processSetup.sampleRate)), 2);
-            config.max_block_size = static_cast<uint32_t>(processSetup.maxSamplesPerBlock);
-            boiledegg_result created = BOILEDEGG_INTERNAL_ERROR;
-            core_ = boiledegg_create(&config, &created);
-            if (!core_ || created != BOILEDEGG_OK) {
-                core_ = nullptr;
-                return kResultFalse;
-            }
-            const float pitch = normalizedToSemitones(requestedPitchNormalized());
-            if (boiledegg_set_pitch_semitones(core_, pitch) != BOILEDEGG_OK) {
-                destroyCore();
-                return kResultFalse;
-            }
-            runtime_.struct_size = sizeof(runtime_);
-            if (boiledegg_get_runtime_info(core_, &runtime_) != BOILEDEGG_OK) {
-                destroyCore();
-                return kResultFalse;
-            }
-        } else {
-            destroyCore();
-        }
-        return SingleComponentEffect::setActive(state);
+    tresult PLUGIN_API setProcessing(TBool active) override {
+        // No constructor, clearing a large history, mutex or allocation here.
+        // Hosts may invoke this on their audio thread; reset is inactive lifecycle.
+        if(active&&!processor_.is_active())return kResultFalse;
+        processing_=active!=0;return kResultOk;
     }
-
-    tresult PLUGIN_API setProcessing(TBool state) override {
-        if (state && core_ && boiledegg_reset(core_) != BOILEDEGG_OK) return kResultFalse;
-        return kResultOk;
+    uint32 PLUGIN_API getLatencySamples() override {return processor_.latency();}
+    uint32 PLUGIN_API getTailSamples() override {return processor_.tail();}
+    ParamValue PLUGIN_API getParamNormalized(ParamID id) override {
+        unsigned i;if(!bp::vst_index(id,i))return 0;
+        return bp::normalize(i,processor_.targets.get(i));
     }
-
-    uint32 PLUGIN_API getLatencySamples() override {
-        return core_ ? runtime_.realtime_latency_frames : defaultLatency(processSetup.sampleRate);
+    tresult PLUGIN_API getParamStringByValue(ParamID id,ParamValue v,String128 text) override {
+        unsigned i;if(!bp::vst_index(id,i)||!std::isfinite(v)||v<0||v>1)return kInvalidArgument;
+        if(i>=bp::Backend){const char* s=bp::choice(i,int(std::round(bp::denormalize(i,v))));unsigned j=0;
+            for(;s[j]&&j<127;++j)text[j]=char16(s[j]);text[j]=0;return kResultOk;}
+        return SingleComponentEffect::getParamStringByValue(id,v,text);
     }
-
-    uint32 PLUGIN_API getTailSamples() override {
-        return core_ ? runtime_.realtime_tail_frames : defaultLatency(processSetup.sampleRate);
+    tresult PLUGIN_API setParamNormalized(ParamID id,ParamValue v) override {
+        unsigned i;if(!bp::vst_index(id,i)||!std::isfinite(v)||v<0||v>1)return kInvalidArgument;
+        float plain=bp::denormalize(i,v);if(bp::parameters[i].stepped)plain=std::round(plain);
+        if(!processor_.request(i,plain))return kResultFalse;
+        const auto result=SingleComponentEffect::setParamNormalized(id,bp::normalize(i,plain));
+        requestRestart();return result;
     }
-
-    tresult PLUGIN_API setParamNormalized(ParamID tag, ParamValue value) override {
-        const tresult result = SingleComponentEffect::setParamNormalized(tag, value);
-        if (result != kResultOk && result != kResultTrue) return result;
-        if (tag == kPitchParamId) {
-            const ParamValue clamped = std::clamp<ParamValue>(value, 0.0, 1.0);
-            pitchNormalizedBits_.store(floatBits(static_cast<float>(clamped)), std::memory_order_relaxed);
-            if (core_ && boiledegg_set_pitch_semitones(core_, normalizedToSemitones(clamped)) != BOILEDEGG_OK)
-                return kResultFalse;
-        }
-        return result;
-    }
-
-    tresult PLUGIN_API process(ProcessData& data) override {
-        if (!core_) return kResultFalse;
-        if (data.symbolicSampleSize != kSample32) return kResultFalse;
-
-        IParamValueQueue* pitchQueue = nullptr;
-        if (data.inputParameterChanges) {
-            const int32 parameterCount = data.inputParameterChanges->getParameterCount();
-            for (int32 i = 0; i < parameterCount; ++i) {
-                auto* queue = data.inputParameterChanges->getParameterData(i);
-                if (queue && queue->getParameterId() == kPitchParamId) {
-                    pitchQueue = queue;
-                    break;
+    tresult PLUGIN_API process(ProcessData& d) override {
+        if(!processor_.is_active()||!processing_||d.symbolicSampleSize!=kSample32||d.numSamples<0||d.numSamples>processSetup.maxSamplesPerBlock)return kResultFalse;
+        std::array<bp::Event,256> events{};unsigned count=0;std::array<bool,bp::Count> seen{};
+        if(d.inputParameterChanges){
+            const auto queues=d.inputParameterChanges->getParameterCount();if(queues<0||queues>4096)return kResultFalse;
+            for(int32 qi=0;qi<queues;++qi){
+                auto* q=d.inputParameterChanges->getParameterData(qi);if(!q)return kResultFalse;
+                unsigned index;if(!bp::vst_index(q->getParameterId(),index))continue;
+                if(seen[index]||!bp::parameters[index].automatable)return kResultFalse;seen[index]=true;
+                auto n=q->getPointCount();if(n<0||unsigned(n)>256-count)return kResultFalse;int32 previous=-1;
+                for(int32 j=0;j<n;++j){int32 offset{};ParamValue value{};
+                    if(q->getPoint(j,offset,value)!=kResultTrue||offset<previous||offset<0||
+                        (d.numSamples?offset>=d.numSamples:offset!=0)||!std::isfinite(value)||value<0||value>1)return kResultFalse;
+                    previous=offset;auto plain=bp::denormalize(index,value);if(bp::parameters[index].stepped)plain=std::round(plain);
+                    events[count++]={static_cast<unsigned>(offset),index,plain};
                 }
             }
+            // Stable bounded insertion sort; preserve duplicate ordering within
+            // each parameter queue, group all same-offset controls atomically.
+            for(unsigned i=1;i<count;++i){auto event=events[i];auto j=i;while(j&&events[j-1].offset>event.offset){events[j]=events[j-1];--j;}events[j]=event;}
         }
-
-        if (data.numSamples == 0) {
-            if (pitchQueue) {
-                const int32 points = pitchQueue->getPointCount();
-                if (points > 0) {
-                    int32 offset = 0;
-                    ParamValue value = 0.5;
-                    if (pitchQueue->getPoint(points - 1, offset, value) == kResultTrue &&
-                        !applyPitchNormalized(value)) return kResultFalse;
-                }
-            }
-            return kResultOk;
+        if(!d.numSamples)return processor_.process(nullptr,nullptr,0,{events.data(),count})?kResultOk:kResultFalse;
+        if(d.numInputs!=1||d.numOutputs!=1||!d.inputs||!d.outputs||d.inputs[0].numChannels!=2||d.outputs[0].numChannels!=2||
+            !d.inputs[0].channelBuffers32||!d.outputs[0].channelBuffers32)return kResultFalse;
+        const float* input[2]{};
+        for(unsigned ch=0;ch<2;++ch){
+            if(!d.outputs[0].channelBuffers32[ch]||!d.inputs[0].channelBuffers32[ch])return kResultFalse;
+            input[ch]=(d.inputs[0].silenceFlags&(uint64{1}<<ch))?zeros_.data():d.inputs[0].channelBuffers32[ch];
         }
-
-        if (data.numInputs != 1 || data.numOutputs != 1 || !data.inputs || !data.outputs ||
-            data.inputs[0].numChannels != 2 || data.outputs[0].numChannels != 2 ||
-            !data.inputs[0].channelBuffers32 || !data.outputs[0].channelBuffers32 ||
-            !data.inputs[0].channelBuffers32[0] || !data.inputs[0].channelBuffers32[1] ||
-            !data.outputs[0].channelBuffers32[0] || !data.outputs[0].channelBuffers32[1]) {
-            return kResultFalse;
-        }
-
-        int32 cursor = 0;
-        if (pitchQueue) {
-            const int32 points = pitchQueue->getPointCount();
-            for (int32 i = 0; i < points; ++i) {
-                int32 offset = 0;
-                ParamValue value = 0.5;
-                if (pitchQueue->getPoint(i, offset, value) != kResultTrue) return kResultFalse;
-                if (offset < cursor || offset > data.numSamples) return kResultFalse;
-                if (offset > cursor && !processRange(data, cursor, offset - cursor)) return kResultFalse;
-                if (!applyPitchNormalized(value)) return kResultFalse;
-                cursor = offset;
-            }
-        }
-        if (cursor < data.numSamples && !processRange(data, cursor, data.numSamples - cursor))
-            return kResultFalse;
-
-        uint64 silence = 0;
-        for (int32 channel = 0; channel < 2; ++channel) {
-            const float* out = data.outputs[0].channelBuffers32[channel];
-            bool zero = true;
-            for (int32 i = 0; i < data.numSamples; ++i) {
-                if (out[i] != 0.0f) { zero = false; break; }
-            }
-            if (zero) silence |= (uint64{1} << static_cast<uint32>(channel));
-        }
-        data.outputs[0].silenceFlags = silence;
+        if(!processor_.process(input,d.outputs[0].channelBuffers32,static_cast<unsigned>(d.numSamples),{events.data(),count}))return kResultFalse;
+        d.outputs[0].silenceFlags=0;return kResultOk;
+    }
+    tresult PLUGIN_API setState(IBStream* stream) override {
+        if(!stream)return kInvalidArgument;std::array<std::uint8_t,bp::state_size> bytes{};
+        auto read=[&](int32 begin,int32 end){while(begin<end){int32 n=0;auto r=stream->read(bytes.data()+begin,end-begin,&n);
+            if(r!=kResultOk||n<=0||n>end-begin)return false;begin+=n;}return true;};
+        if(!read(0,8))return kResultFalse;
+        const auto version=bp::read_word(bytes.data()+4);const auto size=version==1?12u:version==2?unsigned(bp::state_size):0u;
+        if(!size||!read(8,int32(size)))return kResultFalse;
+        bp::Values v;if(!bp::decode({bytes.data(),size},v)||!processor_.request(v))return kResultFalse;
+        for(unsigned i=0;i<bp::Count;++i)SingleComponentEffect::setParamNormalized(bp::vst_id(i),bp::normalize(i,v[i]));
+        if(componentHandler)componentHandler->restartComponent(kParamValuesChanged);
+        requestRestart();return kResultOk;
+    }
+    tresult PLUGIN_API getState(IBStream* stream) override {
+        if(!stream)return kInvalidArgument;auto v=processor_.targets.snapshot();if(!bp::valid_values(v))return kResultFalse;
+        auto bytes=bp::encode(v);int32 position=0;while(position<int32(bytes.size())){int32 n=0;
+            if(stream->write(bytes.data()+position,int32(bytes.size())-position,&n)!=kResultOk||n<=0||n>int32(bytes.size())-position)return kResultFalse;position+=n;}
         return kResultOk;
     }
-
-    tresult PLUGIN_API setState(IBStream* state) override {
-        if (!state) return kInvalidArgument;
-        IBStreamer stream(state, kLittleEndian);
-        int32 magic = 0, version = 0;
-        float semitones = 0.0f;
-        if (!stream.readInt32(magic) || !stream.readInt32(version) || !stream.readFloat(semitones) ||
-            static_cast<uint32>(magic) != kStateMagic || version != kStateVersion ||
-            !std::isfinite(semitones) || semitones < -24.0f || semitones > 24.0f) return kResultFalse;
-        return setParamNormalized(kPitchParamId, semitonesToNormalized(semitones));
+    IPlugView* PLUGIN_API createView(FIDString name) override {
+#ifdef BOILED_EGG_PLUGIN_X11
+        if(name&&!std::strcmp(name,ViewType::kEditor))return new PitchView(this);
+#else
+        (void)name;
+#endif
+        return nullptr;
     }
-
-    tresult PLUGIN_API getState(IBStream* state) override {
-        if (!state) return kInvalidArgument;
-        IBStreamer stream(state, kLittleEndian);
-        const float semitones = normalizedToSemitones(requestedPitchNormalized());
-        if (!stream.writeInt32(static_cast<int32>(kStateMagic)) ||
-            !stream.writeInt32(kStateVersion) || !stream.writeFloat(semitones)) return kResultFalse;
-        return kResultOk;
+    bp::Processor& model() noexcept {return processor_;}
+#ifdef BOILED_EGG_PLUGIN_X11
+    bool edit(unsigned i,float value,bp::Gesture stage) noexcept {
+        if(i>=bp::Count)return false;
+        if(stage==bp::Gesture::Begin)return beginEdit(bp::vst_id(i))==kResultOk;
+        if(stage==bp::Gesture::End)return endEdit(bp::vst_id(i))==kResultOk;
+        if(setParamNormalized(bp::vst_id(i),bp::normalize(i,value))!=kResultOk)return false;
+        return performEdit(bp::vst_id(i),bp::normalize(i,value))==kResultOk;
     }
-
+#endif
 private:
-    ParamValue requestedPitchNormalized() const noexcept {
-        return static_cast<ParamValue>(bitsFloat(pitchNormalizedBits_.load(std::memory_order_relaxed)));
+    void requestRestart() noexcept {
+        if(processor_.needs_restart()&&componentHandler)componentHandler->restartComponent(kIoChanged|kLatencyChanged);
     }
-
-    bool applyPitchNormalized(ParamValue value) noexcept {
-        const ParamValue clamped = std::clamp<ParamValue>(value, 0.0, 1.0);
-        pitchNormalizedBits_.store(floatBits(static_cast<float>(clamped)), std::memory_order_relaxed);
-        return boiledegg_set_pitch_semitones(core_, normalizedToSemitones(clamped)) == BOILEDEGG_OK;
-    }
-
-    bool processRange(ProcessData& data, int32 offset, int32 frames) noexcept {
-        if (frames <= 0) return true;
-        const uint64 inputSilence = data.inputs[0].silenceFlags;
-        const float* in[2]{};
-        float* out[2]{};
-        for (int32 channel = 0; channel < 2; ++channel) {
-            out[channel] = data.outputs[0].channelBuffers32[channel] + offset;
-            if ((inputSilence & (uint64{1} << static_cast<uint32>(channel))) != 0) {
-                std::fill_n(out[channel], frames, 0.0f);
-                in[channel] = out[channel];
-            } else {
-                in[channel] = data.inputs[0].channelBuffers32[channel] + offset;
-            }
-        }
-        const auto result = boiledegg_process_realtime(
-            core_, in, out, static_cast<uint32_t>(frames), nullptr, 0);
-        return result == BOILEDEGG_OK || result == BOILEDEGG_REALTIME_UNDERRUN;
-    }
-
-    void destroyCore() noexcept {
-        boiledegg_destroy(core_);
-        core_ = nullptr;
-        runtime_ = {};
-        runtime_.struct_size = sizeof(runtime_);
-    }
-
-    boiledegg_handle* core_ = nullptr;
-    boiledegg_runtime_info runtime_{sizeof(boiledegg_runtime_info), 0, 0, 0, 0, 0, 0, 0};
-    std::atomic<uint32_t> pitchNormalizedBits_{floatBits(0.5f)};
+    bp::Processor processor_;std::vector<float> zeros_;bool processing_{};
 };
 
+#ifdef BOILED_EGG_PLUGIN_X11
+PitchView::PitchView(BoiledEggVst3* owner):owner_(owner){
+    owner_->addRef();rect={0,0,int32(bp::PitchEditor::default_width),int32(bp::PitchEditor::default_height)};
+    bp::EditorCallbacks callbacks{owner_,[](void* p)noexcept{return static_cast<BoiledEggVst3*>(p)->model().targets.snapshot();},
+        [](void* p,unsigned i,float v,bp::Gesture g)noexcept{return static_cast<BoiledEggVst3*>(p)->edit(i,v,g);},
+        [](void* p)noexcept{return static_cast<BoiledEggVst3*>(p)->model().latency();},
+        [](void* p)noexcept{return static_cast<BoiledEggVst3*>(p)->model().needs_restart();},
+        [](void* p)noexcept{return static_cast<BoiledEggVst3*>(p)->model().error();}};
+    editor_=std::make_unique<bp::PitchEditor>(callbacks);editor_->host_keyboard(true);
+}
+PitchView::~PitchView(){removed();owner_->release();}
+void PitchView::unregister() noexcept {if(registered_&&loop_)loop_->unregisterTimer(this);registered_=false;loop_=nullptr;}
+tresult PitchView::isPlatformTypeSupported(FIDString type){return type&&!std::strcmp(type,kPlatformTypeX11EmbedWindowID)?kResultTrue:kResultFalse;}
+tresult PitchView::attached(void* parent,FIDString type){
+    if(!parent||isAttached()||isPlatformTypeSupported(type)!=kResultTrue||!plugFrame)return kResultFalse;
+    FUnknownPtr<Linux::IRunLoop> loop(plugFrame);if(!loop)return kResultFalse;
+    if(!editor_->attach(reinterpret_cast<std::uintptr_t>(parent)))return kResultFalse;
+    loop_=loop.get();if(loop_->registerTimer(this,33)!=kResultOk){editor_->detach();loop_=nullptr;return kResultFalse;}
+    registered_=true;editor_->resize(unsigned(rect.getWidth()),unsigned(rect.getHeight()));editor_->show(true);
+    return CPluginView::attached(parent,type);
+}
+tresult PitchView::removed(){unregister();if(editor_)editor_->detach();return CPluginView::removed();}
+tresult PitchView::setFrame(IPlugFrame* frame){if(registered_&&frame!=plugFrame.get())return kResultFalse;return CPluginView::setFrame(frame);}
+tresult PitchView::onSize(ViewRect* size){if(!size||size->getWidth()<760||size->getHeight()<560||size->getWidth()>1800||size->getHeight()>1280)return kResultFalse;
+    if(isAttached()&&!editor_->resize(unsigned(size->getWidth()),unsigned(size->getHeight())))return kResultFalse;return CPluginView::onSize(size);}
+tresult PitchView::checkSizeConstraint(ViewRect* size){if(!size)return kInvalidArgument;size->right=size->left+std::clamp(size->getWidth(),760,1800);size->bottom=size->top+std::clamp(size->getHeight(),560,1280);return kResultTrue;}
+tresult PitchView::onKeyDown(char16 key,int16 code,int16 mods){
+    if(!isAttached()||!editor_)return kResultFalse;
+    unsigned long symbol=key;
+    switch(code){case KEY_RETURN:case KEY_ENTER:symbol=XK_Return;break;case KEY_BACK:symbol=XK_BackSpace;break;
+        case KEY_ESCAPE:symbol=XK_Escape;break;case KEY_TAB:symbol=XK_Tab;break;case KEY_LEFT:symbol=XK_Left;break;
+        case KEY_RIGHT:symbol=XK_Right;break;case KEY_UP:symbol=XK_Up;break;case KEY_DOWN:symbol=XK_Down;break;case KEY_HOME:symbol=XK_Home;break;default:break;}
+    return editor_->key_input(symbol,key<128?char(key):0,(mods&kShiftKey)!=0,(mods&(kCommandKey|kControlKey))!=0)?kResultTrue:kResultFalse;
+}
+void PitchView::onTimer(){if(editor_&&isAttached())editor_->pump();}
+#endif
 } // namespace Steinberg::Vst
 
 BEGIN_FACTORY_DEF("zkamiyama", "https://github.com/zkamiyama/boiled-egg", "")
-
-DEF_CLASS2(INLINE_UID(0x9C23D6A1, 0x6E0B4F86, 0xA5C74C2B, 0x7D13F521),
-           Steinberg::PClassInfo::kManyInstances,
-           kVstAudioEffectClass,
-           "boiled egg",
-           0,
-           "Fx|Pitch Shift",
-           "0.1.2",
-           kVstVersionString,
-           Steinberg::Vst::BoiledEggVst3::createInstance)
-
+DEF_CLASS2(INLINE_UID(0x9C23D6A1,0x6E0B4F86,0xA5C74C2B,0x7D13F521),Steinberg::PClassInfo::kManyInstances,
+ kVstAudioEffectClass,"boiled egg",0,"Fx|Pitch Shift","0.1.3-preview",kVstVersionString,Steinberg::Vst::BoiledEggVst3::createInstance)
 END_FACTORY

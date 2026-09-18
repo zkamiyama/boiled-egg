@@ -128,7 +128,7 @@ int main(int argc, char** argv) {
                "stereo audio port contract failed")) return 8;
 
     clap_param_info_t param_info{};
-    if (!check(params->count(plugin) == 1 && params->get_info(plugin, 0, &param_info) &&
+    if (!check(params->count(plugin) == 12 && params->get_info(plugin, 0, &param_info) &&
                param_info.min_value == -24.0 && param_info.max_value == 24.0,
                "parameter contract failed")) return 9;
 
