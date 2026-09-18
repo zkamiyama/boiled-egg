@@ -9,6 +9,7 @@ import sys
 import tempfile
 import threading
 import uuid
+import time
 import numpy as np
 import soundfile as sf
 from PySide6.QtCore import Qt, QTimer, Signal, QObject, QUrl, QPointF
@@ -20,6 +21,7 @@ from native import NATIVE_MODES
 from audio_output import OutputPump
 from worker import PlayerWorker,Settings
 import sdk_compare
+import comparison_batch
 
 
 class Waveform(QWidget):
@@ -61,7 +63,7 @@ class MainWindow(QMainWindow):
     def __init__(self,library=None,sdk=None):
         super().__init__();self.setWindowTitle('boiled egg — Audition Lab');self.resize(1110,810)
         self.library=library;self.sdk=sdk;self.source_path=None;self.reference_path=None;self.playing=False;self.eof=False
-        self.last_speed=1.;self.duration=0.;self.native_ready=False;self.last_state={}
+        self.last_speed=1.;self.duration=0.;self.native_ready=False;self.last_state={};self.comparisons=[]
         self.temporary=tempfile.TemporaryDirectory(prefix='boiled-egg-audition-')
         self.pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='sdk-compare');self.job=None;self.cancel=threading.Event()
         self.worker=PlayerWorker(library);self.worker.start();self.pump=OutputPump(self.worker.audio,self)
@@ -118,10 +120,13 @@ class MainWindow(QMainWindow):
         layout.addLayout(cr)
         bounds=QLabel('WSOLA: 速度0.25〜4・±24 st / PV: 速度0.5〜2・±12 st。範囲外と未対応保持はエラー表示。自動代替・時間合わせ・音量正規化なし。');bounds.setWordWrap(True);layout.addWidget(bounds)
         buttons=QHBoxLayout();self.render_button=QPushButton('現在の原音をSDKでレンダー');self.render_button.clicked.connect(self.render_sdk);buttons.addWidget(self.render_button)
+        self.batch_button=QPushButton('5方式を同条件で比較');self.batch_button.clicked.connect(self.render_all_sdk);buttons.addWidget(self.batch_button)
         cancel=QPushButton('レンダー中止');cancel.clicked.connect(self.cancel.set);buttons.addWidget(cancel)
         external=QPushButton('比較音源を開く');external.clicked.connect(self.open_reference);buttons.addWidget(external);layout.addLayout(buttons)
         actions=QHBoxLayout();play=QPushButton('▶ 比較音源を再生');play.clicked.connect(self.play_reference);actions.addWidget(play)
         stop=QPushButton('比較音源を停止');actions.addWidget(stop)
+        self.comparison_choice=QComboBox();self.comparison_choice.currentIndexChanged.connect(self.select_comparison);layout.addWidget(self.comparison_choice)
+        save=QPushButton('選択WAVと記録を保存');save.clicked.connect(self.save_comparison);actions.addWidget(save)
         self.reference_label=QLabel('比較音源未選択');self.reference_label.setWordWrap(True);layout.addWidget(self.reference_label);layout.addLayout(actions);layout.addStretch()
         self.media=QMediaPlayer(self);self.media_output=QAudioOutput(self);self.media_output.setVolume(.25);self.media.setAudioOutput(self.media_output)
         self.media.errorOccurred.connect(lambda *_:self.show_error(self.media.errorString()));stop.clicked.connect(self.media.stop)
@@ -190,10 +195,36 @@ class MainWindow(QMainWindow):
         self.pause();self.cancel.clear();dest=Path(self.temporary.name)/(uuid.uuid4().hex+'.wav')
         self.job=self.pool.submit(sdk_compare.render,self.source_path,dest,self.sdk_mode.currentIndex(),self.sdk_speed.value(),
             self.sdk_pitch.value(),self.sdk_policy.currentText(),self.sdk_formant.value(),self.sdk,self.cancel)
-        self.reference_path=None;self._render_destination=dest;self.render_button.setEnabled(False);self.reference_label.setText('SDKレンダー中…')
+        self.reference_path=None;self._render_destination=dest;self._batch_directory=None;self.render_button.setEnabled(False);self.batch_button.setEnabled(False);self.reference_label.setText('SDKレンダー中…')
+    def render_all_sdk(self):
+        if not self.source_path:self.show_error('先に原音を読み込んでください。');return
+        if self.job and not self.job.done():self.show_error('比較レンダーが進行中です。');return
+        self.pause();self.cancel.clear();dest=Path(self.temporary.name)/('comparison-'+uuid.uuid4().hex)
+        self.job=self.pool.submit(comparison_batch.render_batch,self.source_path,dest,self.sdk_speed.value(),
+            self.sdk_pitch.value(),self.sdk_policy.currentText(),self.sdk_formant.value(),self.sdk,self.cancel)
+        self._batch_directory=dest;self.reference_path=None;self.render_button.setEnabled(False);self.batch_button.setEnabled(False)
+        self.reference_label.setText('5方式を同じ原音・設定でレンダー中…（未対応条件は代替しません）')
+    def set_comparisons(self,entries):
+        self.media.stop();self.comparisons=entries;self.comparison_choice.blockSignals(True);self.comparison_choice.clear()
+        for entry in entries:self.comparison_choice.addItem(entry['label'])
+        self.comparison_choice.blockSignals(False)
+        if entries:self.comparison_choice.setCurrentIndex(0);self.select_comparison(0)
+    def select_comparison(self,index):
+        self.media.stop()
+        if not 0<=index<len(self.comparisons):return
+        entry=self.comparisons[index];self.reference_path=entry.get('path')
+        self.reference_label.setText(entry['label']+'\n'+entry.get('detail',''))
+    def save_comparison(self):
+        if not self.reference_path:self.show_error('保存できる比較出力を選択してください。');return
+        path,_=QFileDialog.getSaveFileName(self,'比較WAVと測定記録を保存','','Wave (*.wav)')
+        if path:
+            try:
+                comparison_batch.save_result(self.reference_path,path)
+                self.log.appendPlainText('生の比較出力を保存: '+path)
+            except Exception as exc:self.show_error(str(exc))
     def open_reference(self):
         path,_=QFileDialog.getOpenFileName(self,'既存の研究出力を比較用に開く','','Audio (*.wav *.flac *.aiff *.ogg)')
-        if path:self.reference_path=Path(path);self.reference_label.setText('外部比較音源（生成方式は未検証）: '+path)
+        if path:self.set_comparisons([dict(path=Path(path),label='外部比較音源（生成方式は未検証）',detail=path)])
     def play_reference(self):
         if not self.reference_path:self.show_error('比較音源を生成または開いてください。');return
         self.pause()
@@ -215,6 +246,9 @@ class MainWindow(QMainWindow):
                     self.volume_changed()
                     if resume_requested and self.pump.play():
                         self.send('play');self.playing=True;self.play_button.setText('Ⅱ 一時停止')
+            elif kind=='position':
+                self.wave.position=data['source_seconds'];self.wave.update()
+                self.native_status.setText(f"原音位置 {self.wave.position:.3f} s — 再生で合成を開始")
             elif kind=='loaded':
                 self.source_path=Path(data['path']);self.duration=data['frames']/data['rate'];self.wave.set_audio(data['waveform'],data['frames'],data['rate'])
                 self.file_label.setText(f"{self.source_path.name}  |  {data['rate']} Hz  |  {data['waveform'].shape[1]} ch  |  {self.duration:.2f} s")
@@ -228,10 +262,21 @@ class MainWindow(QMainWindow):
         if self.eof and self.worker.audio.empty() and not self.pump.pending:
             if not self.pump.sink or self.pump.sink.bytesFree()>=self.pump.sink.bufferSize():self.pause();self.eof=False;self.native_status.setText('原音終端・tail出力完了')
         if self.job and self.job.done():
-            job=self.job;self.job=None;self.render_button.setEnabled(True)
+            job=self.job;self.job=None;self.render_button.setEnabled(True);self.batch_button.setEnabled(True)
             try:
-                receipt=job.result();self.reference_path=self._render_destination
-                self.reference_label.setText(f"{receipt['mode']} | {receipt['output_frames']} frames | raw peak {receipt['peak']:.3f}\n無加工の比較WAVを生成しました。")
+                receipt=job.result()
+                if self._batch_directory is not None:
+                    entries=[]
+                    for row in receipt['results']:
+                        item=dict(label=row['mode']+' — '+row['status'])
+                        if row['status']=='passed':
+                            item['path']=self._batch_directory/row['output'];item['detail']=f"{receipt['source_name']} | {row['receipt']['output_frames']} frames | raw peak {row['receipt']['peak']:.3f}"
+                        else:item['detail']=row['reason']
+                        entries.append(item)
+                    self.set_comparisons(entries)
+                    self.log.appendPlainText(f"比較完了: {sum(row['status']=='passed' for row in receipt['results'])}/5。未対応・失敗も選択欄に残しています。")
+                else:
+                    self.set_comparisons([dict(path=self._render_destination,label=receipt['mode'],detail=f"{receipt['output_frames']} frames | raw peak {receipt['peak']:.3f} — 無加工の比較WAV")])
             except Exception as exc:self.show_error(str(exc));self.reference_label.setText('比較レンダー未完了（代替処理なし）')
     def dragEnterEvent(self,event):
         if event.mimeData().hasUrls():event.acceptProposedAction()
@@ -263,9 +308,17 @@ def main():
     if args.file:window.load(args.file)
     elif args.demo or args.smoke:window.demo()
     if args.smoke or args.screenshot:
+        deadline=time.monotonic()+10
         def capture():
-            if args.screenshot:args.screenshot.parent.mkdir(parents=True,exist_ok=True);window.grab().save(str(args.screenshot))
-            if args.smoke:window.close()
-        QTimer.singleShot(1600,capture)
+            if args.smoke and not window.native_ready and time.monotonic()<deadline:
+                QTimer.singleShot(50,capture);return
+            success=window.native_ready if args.smoke else True
+            if args.screenshot:
+                args.screenshot.parent.mkdir(parents=True,exist_ok=True)
+                success=window.grab().save(str(args.screenshot)) and success
+            if args.smoke:
+                print('Standalone native source ready' if success else 'Standalone smoke failed: source/library unavailable',flush=True)
+                window.close();app.exit(0 if success else 1)
+        QTimer.singleShot(200,capture)
     return app.exec()
 if __name__=='__main__':raise SystemExit(main())
