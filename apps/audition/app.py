@@ -75,7 +75,7 @@ class MainWindow(QMainWindow):
         bar=QHBoxLayout();load=QPushButton('音声を開く');load.clicked.connect(self.choose_file);bar.addWidget(load)
         demo=QPushButton('デモ素材');demo.clicked.connect(self.demo);bar.addWidget(demo)
         self.file_label=QLabel('WAV / FLAC / AIFF / OGG をドロップ');bar.addWidget(self.file_label,1);outer.addLayout(bar)
-        self.wave=Waveform();self.wave.seek.connect(self.seek);outer.addLayout(QVBoxLayout()) if False else None;outer.addWidget(self.wave)
+        self.wave=Waveform();self.wave.seek.connect(self.seek);outer.addWidget(self.wave)
         self.tabs=QTabWidget();outer.addWidget(self.tabs,1)
         native_page=QWidget();nl=QVBoxLayout(native_page)
         row=QHBoxLayout();self.mode=QComboBox()
