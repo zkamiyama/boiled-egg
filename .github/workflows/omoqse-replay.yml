@@ -1,0 +1,78 @@
+name: omoqse-replay
+on:
+  push:
+    paths: ['eval/**', 'docs/benchmarks/OMOQSE*', '.github/workflows/omoqse-replay.yml']
+  pull_request:
+    paths: ['eval/**', 'docs/benchmarks/OMOQSE*', '.github/workflows/omoqse-replay.yml']
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  real-cnn-controls:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      OPENBLAS_NUM_THREADS: 1
+      OMP_NUM_THREADS: 1
+      OMOQSE_AUTHOR_SOURCE: ${{ github.workspace }}/external/Eval_OMOQ_CNN.py
+      OMOQSE_CNN_WEIGHTS: ${{ github.workspace }}/external/OMOQSE_CNN.pth
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13.5'
+      - name: Fixed numerical environment
+        run: |
+          mkdir -p validation external
+          python -m pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install numpy==2.3.5 scipy==1.17.0 soundfile==0.13.1 librosa==0.11.0
+          python -m pip freeze > validation/PYTHON_VERSIONS.txt
+      - name: Fetch external author implementation and checkpoint; verify before loading
+        run: |
+          base=https://raw.githubusercontent.com/zygurt/TSM/51333f70685de94c856efa46d0fb23a99d93921a/OMOQSE
+          curl --fail --location "$base/Eval_OMOQ_CNN.py" -o "$OMOQSE_AUTHOR_SOURCE"
+          curl --fail --location "$base/models/CNN/2020-08-23_15-11-52/OMOQ.pth" -o "$OMOQSE_CNN_WEIGHTS"
+          echo "154816c4752cba2e3e0cafd6f45fb0d7eb337d30ab5bb2258dbcfa4b47b876ad  $OMOQSE_AUTHOR_SOURCE" | sha256sum -c -
+          echo "261336ab331254259010566ef7b9e8d03a0e65156a2381f6b6605d7d3faa659a  $OMOQSE_CNN_WEIGHTS" | sha256sum -c -
+          sha256sum external/* > validation/EXTERNAL_SHA256SUMS
+      - name: Compile and run exact28 tests; unavailable assets are failures, never skips
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m py_compile eval/omoqse_replay.py eval/prepare_omoqse_replay.py eval/test_omoqse_replay.py
+          PYTHONPATH=eval python - <<'PY' 2>&1 | tee validation/unit.log
+          import json, unittest
+          suite = unittest.defaultTestLoader.loadTestsFromNames(['test_omoqse_replay', 'test_tsm_dataset', 'test_fixed_predictor'])
+          def ids(node):
+              if isinstance(node, unittest.TestSuite):
+                  return [item for child in node for item in ids(child)]
+              return [node.id()]
+          names = ids(suite)
+          assert len(names) == len(set(names)) == 28, names
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          ok = result.wasSuccessful() and result.testsRun == 28 and not result.skipped
+          with open('validation/unit.json', 'w') as stream:
+              json.dump(dict(expected=28, executed=result.testsRun, skipped=len(result.skipped),
+                             passed=ok, test_ids=names), stream, indent=2)
+          raise SystemExit(0 if ok else 1)
+          PY
+      - name: Capture exact source, not weights or user audio
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p validation
+          git rev-parse HEAD > validation/COMMIT.txt
+          git rev-parse HEAD^{tree} > validation/TREE.txt
+          git ls-files -z | xargs -0 sha256sum > validation/SOURCE_SHA256SUMS
+          tar -czf validation/source.tar.gz --null -T <(git ls-files -z)
+          find validation -type f ! -name EVIDENCE_SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > validation/EVIDENCE_SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: omoqse-cnn-controls
+          path: validation
+          if-no-files-found: error
