@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import struct
 import unittest
 import numpy as np
 import soundfile as sf
@@ -74,6 +75,25 @@ class CLITests(unittest.TestCase):
             with self.subTest(name=name):
                 p,out=self.call(name,opts,audio,rate);self.assertEqual(p.returncode,2,p.stderr)
                 report=json.loads((out/'report.json').read_text());self.assertEqual(report['status'],'blocked')
+                self.assertFalse((out/'output.wav').exists())
+
+    def test_malformed_wav_layout_before_allocation(self):
+        original=self.input.read_bytes()
+        def wav(chunks):return b'RIFF'+struct.pack('<I',4+len(chunks))+b'WAVE'+chunks
+        fmt=b'fmt '+struct.pack('<IHHIIHH',16,3,1,48000,192000,4,32)
+        data=b'data'+struct.pack('<I',128)+struct.pack('<f',.2)*32
+        cases={'truncated':original[:-64],
+            'riff_length':original[:4]+struct.pack('<I',4)+original[8:],
+            'huge_chunk':wav(fmt+b'data'+struct.pack('<I',0xfffffff0)+b'abcd'),
+            'partial_sample':wav(fmt+b'data'+struct.pack('<I',3)+b'abc'+b'\x00'),
+            'duplicate_data':wav(fmt+data+data),
+            'duplicate_fmt':wav(fmt+fmt+data),
+            'missing_fmt':wav(data)}
+        for name,raw in cases.items():
+            with self.subTest(name=name):
+                self.input.write_bytes(raw);process,out=self.call(name,self.opts())
+                self.assertEqual(process.returncode,2,process.stderr)
+                self.assertEqual(json.loads((out/'report.json').read_text())['status'],'blocked')
                 self.assertFalse((out/'output.wav').exists())
 
 if __name__=='__main__':unittest.main()
