@@ -1,0 +1,16 @@
+{
+  "protocol_amendment": "Before any model inference: actual Python is 3.13.5, not the clerical Python3.11 in protocol72a2942. This file is authoritative for the replay runtime.",
+  "python": "3.13.5",
+  "torch": "2.10.0+cpu",
+  "librosa": "0.11.0",
+  "numpy": "2.3.5",
+  "scipy": "1.17.0",
+  "soundfile": "0.13.1",
+  "threads": 1,
+  "seed": 20260920,
+  "crops": 16,
+  "crop_frames": 53,
+  "profile": "omoqse-cnn-modern-reflect-seeded-v1",
+  "historical_preprocessing_equivalence": false,
+  "independent_qualification": false
+}
