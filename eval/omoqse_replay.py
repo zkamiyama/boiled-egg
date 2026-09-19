@@ -215,6 +215,9 @@ def run(plan_path: Path, plan_sha: str, output: Path) -> dict:
                 feat, prep = features(audio, rate)
                 starts = crop_starts(feat.shape[-1], digest(raw))
                 values = model.predict(feat, starts)
+                require(isinstance(values, list) and len(values) == CROPS, 'incomplete model return')
+                values = [audit.number(v, 'model prediction') for v in values]
+                require(all(1 <= v <= 5 for v in values), 'model return outside sigmoid scale')
                 report['model_inference_performed'] = True
                 receipt.update(status='ok', source_id=row['source_id'], engine_id=row['engine_id'],
                       category=row['category'], label=audit.number(row['mos'], 'label'),
