@@ -53,14 +53,17 @@ jobs:
         run: |
           python -m unittest discover -s quality/audition -v 2>&1 | tee validation/scope-tests.log
           python quality/audition/audit_scope.py --reference .main-reference --candidate . --output validation/main-scope.json
+          # The application build intentionally omits SDK tests. Re-enable them
+          # explicitly: a successful zero-test CTest invocation is not evidence.
+          cmake -S . -B build-sdk -DCMAKE_BUILD_TYPE=Release -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON -DBOILED_EGG_BUILD_TESTS=ON
           cmake --build build-sdk -j2
-          ctest --test-dir build-sdk --output-on-failure | tee validation/sdk-on.log
-          cmake -S . -B build-default -G Ninja -DCMAKE_BUILD_TYPE=Release
+          ctest --test-dir build-sdk --no-tests=error --output-on-failure | tee validation/sdk-on.log
+          cmake -S . -B build-default -G Ninja -DCMAKE_BUILD_TYPE=Release -DBOILED_EGG_BUILD_TESTS=ON
           cmake --build build-default -j2
-          ctest --test-dir build-default --output-on-failure | tee validation/sdk-off.log
+          ctest --test-dir build-default --no-tests=error --output-on-failure | tee validation/sdk-off.log
       - name: Actual Qt audio route and device removal on isolated software sink
         run: |
-          python apps/audition/verify_audio_route.py --output validation/qt-loopback | tee validation/qt-loopback.log
+          python apps/audition/verify_audio_route.py --output validation/qt-loopback 2>&1 | tee validation/qt-loopback.log
       - name: Independent held-tone pitch and memory checks
         run: |
           export BOILED_EGG_TRANSPORT_LIBRARY="$PWD/build-transport/libboiled_egg_transport.so"
