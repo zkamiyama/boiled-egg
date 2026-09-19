@@ -10,6 +10,8 @@
 #include <stdexcept>
 #include <string>
 #include <chrono>
+#include <array>
+#include <cstring>
 
 namespace fs=std::filesystem;
 namespace {
@@ -23,6 +25,43 @@ double number(const std::string& text) {
     std::size_t end=0; const auto value=std::stod(text,&end);
     if(end!=text.size() || !std::isfinite(value)) throw std::invalid_argument("invalid finite number");
     return value;
+}
+// Bound every RIFF chunk BEFORE the reused legacy reader allocates its payload.
+// Strict finite-file profile: truncated data must never become zero padding.
+void validate_wav_layout(const fs::path& path) {
+    const auto size=fs::file_size(path);
+    if(size<12 || size>24000000) throw std::invalid_argument("input file size outside safety bounds");
+    std::ifstream f(path,std::ios::binary);
+    auto read=[&](auto& data) {f.read(reinterpret_cast<char*>(data.data()),static_cast<std::streamsize>(data.size()));if(!f)throw std::invalid_argument("truncated WAV header");};
+    auto u16=[](const unsigned char* b) {return static_cast<std::uint32_t>(b[0])|(static_cast<std::uint32_t>(b[1])<<8);};
+    auto u32=[](const unsigned char* b) {return static_cast<std::uint32_t>(b[0])|(static_cast<std::uint32_t>(b[1])<<8)|(static_cast<std::uint32_t>(b[2])<<16)|(static_cast<std::uint32_t>(b[3])<<24);};
+    std::array<unsigned char,12> head{};read(head);
+    if(std::memcmp(head.data(),"RIFF",4) || std::memcmp(head.data()+8,"WAVE",4) || static_cast<std::uint64_t>(u32(head.data()+4))+8!=size)
+        throw std::invalid_argument("RIFF length/type does not match complete file");
+    bool have_format=false,have_data=false;
+    std::uint32_t rate=0,bytes=0,data_bytes=0;
+    std::uint64_t pos=12;
+    while(pos<size) {
+        if(size-pos<8)throw std::invalid_argument("truncated WAV chunk header");
+        f.seekg(static_cast<std::streamoff>(pos));std::array<unsigned char,8> chunk{};read(chunk);
+        const auto length=u32(chunk.data()+4);
+        if(static_cast<std::uint64_t>(length)+(length&1u)>size-pos-8)throw std::invalid_argument("WAV chunk exceeds file boundary");
+        if(!std::memcmp(chunk.data(),"fmt ",4)) {
+            if(have_format || length<16)throw std::invalid_argument("duplicate/incomplete WAV format");
+            std::array<unsigned char,16> fmt{};read(fmt);have_format=true;
+            const auto format=u16(fmt.data()),channels=u16(fmt.data()+2),bits=u16(fmt.data()+14);
+            rate=u32(fmt.data()+4);bytes=bits/8;
+            if(channels!=1 || (rate!=48000 && rate!=96000))throw std::invalid_argument("requires48/96k mono; no implicit conversion");
+            if(!((format==1 && bits==16)||(format==3 && bits==32)))throw std::invalid_argument("requires PCM16 or float32 WAV");
+            if(u16(fmt.data()+12)!=bytes || u32(fmt.data()+8)!=rate*bytes)throw std::invalid_argument("inconsistent WAV block alignment/rate");
+        } else if(!std::memcmp(chunk.data(),"data",4)) {
+            if(have_data)throw std::invalid_argument("duplicate WAV data chunk");
+            have_data=true;data_bytes=length;
+        }
+        pos+=8+static_cast<std::uint64_t>(length)+(length&1u);
+    }
+    if(!have_format || !have_data || !bytes || !data_bytes || data_bytes%bytes || data_bytes/bytes>static_cast<std::uint64_t>(rate)*30)
+        throw std::invalid_argument("missing/partial/empty/overlong WAV samples");
 }
 void write(const fs::path& path,const std::string& text) {
     std::ofstream file(path); file.exceptions(std::ios::badbit|std::ios::failbit); file<<text<<'\n';
@@ -53,7 +92,7 @@ int main(int argc,char** argv) {
         const auto semitones=args.contains("--pitch-semitones")?number(args["--pitch-semitones"]):0;
         if(semitones < -12 || semitones > 12) throw std::invalid_argument("pitch outside +/-12st");
         c.pitch_ratio=std::pow(2.,semitones/12.);
-        if(fs::file_size(argv[1])>24000000) throw std::invalid_argument("input file exceeds safety limit");
+        validate_wav_layout(argv[1]);
         WavData input; std::string error;
         if(!read_wav(argv[1],input,error)) throw std::runtime_error(error);
         if(input.channels!=1) throw std::invalid_argument("only mono supported; no implicit downmix");
