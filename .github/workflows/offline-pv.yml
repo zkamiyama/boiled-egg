@@ -91,16 +91,16 @@ jobs:
           export BOILED_EGG_OFFLINE_CLI="$PWD/build-offline/boiled_egg_offline_pv"
           PYTHONPATH=eval python - <<'PY' 2>&1 | tee evidence/python.log
           import json, unittest
-          suite = unittest.defaultTestLoader.loadTestsFromNames(['test_offline_pv','test_tsm_dataset','test_fixed_predictor','test_comparison_contract'])
+          suite = unittest.defaultTestLoader.loadTestsFromNames(['test_offline_pv','test_offline_pv_assess','test_tsm_dataset','test_fixed_predictor','test_comparison_contract'])
           def ids(s):
               if isinstance(s, unittest.TestSuite): return [x for child in s for x in ids(child)]
               return [s.id()]
           names = ids(suite)
-          assert len(names) == len(set(names)) == 41, names
+          assert len(names) == len(set(names)) == 45, names
           result = unittest.TextTestRunner(verbosity=2).run(suite)
-          passed = result.wasSuccessful() and result.testsRun == 41 and not result.skipped
+          passed = result.wasSuccessful() and result.testsRun == 45 and not result.skipped
           with open('evidence/python.json','w') as f:
-              json.dump(dict(expected=41,executed=result.testsRun,skipped=len(result.skipped),passed=passed,test_ids=names),f,indent=2)
+              json.dump(dict(expected=45,executed=result.testsRun,skipped=len(result.skipped),passed=passed,test_ids=names),f,indent=2)
           raise SystemExit(0 if passed else 1)
           PY
       - name: Freeze source, binary and complete grid before measurement
@@ -109,6 +109,8 @@ jobs:
       - name: All 210 settings times three complete runs; quality failures are retained, not called test failures
         run: |
           python eval/offline_pv_benchmark.py run --plan evidence/experiment/plan.json --plan-sha256 "$(cat evidence/PLAN_SHA256.txt)" --output evidence/results 2>&1 | tee evidence/benchmark.log
+      - name: Apply recorded per-cell stopping thresholds without promoting the candidate
+        run: python eval/offline_pv_assess.py --summary evidence/results/summary.json --output evidence/results/assessment.json
       - name: Archive exact source and every evidence hash even on failure
         if: always()
         run: |
