@@ -96,11 +96,11 @@ jobs:
               if isinstance(s, unittest.TestSuite): return [x for child in s for x in ids(child)]
               return [s.id()]
           names = ids(suite)
-          assert len(names) == len(set(names)) == 45, names
+          assert len(names) == len(set(names)) == 46, names
           result = unittest.TextTestRunner(verbosity=2).run(suite)
-          passed = result.wasSuccessful() and result.testsRun == 45 and not result.skipped
+          passed = result.wasSuccessful() and result.testsRun == 46 and not result.skipped
           with open('evidence/python.json','w') as f:
-              json.dump(dict(expected=45,executed=result.testsRun,skipped=len(result.skipped),passed=passed,test_ids=names),f,indent=2)
+              json.dump(dict(expected=46,executed=result.testsRun,skipped=len(result.skipped),passed=passed,test_ids=names),f,indent=2)
           raise SystemExit(0 if passed else 1)
           PY
       - name: Freeze source, binary and complete grid before measurement
