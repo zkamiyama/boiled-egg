@@ -261,7 +261,8 @@ def evaluate(plan_path: Path, plan_sha256: str, predictions_path: Path,
         report["scope"] = scope
         require(type(plan["expected_rows"]) is int and plan["expected_rows"] > 0, "invalid expected row count")
         root = plan_path.resolve().parent
-        require(set(plan["artifacts"]) >= ARTIFACTS, "missing frozen model artifacts")
+        require(isinstance(plan["artifacts"], dict) and set(plan["artifacts"]) >= ARTIFACTS,
+                "missing/invalid frozen model artifacts")
         artifacts = {}
         for role, spec in sorted(plan["artifacts"].items()):
             checked_file(root, spec, files)
