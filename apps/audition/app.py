@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
 from PySide6.QtMultimedia import QMediaDevices, QMediaPlayer, QAudioOutput
 from native import NATIVE_MODES
 from audio_output import OutputPump
+from audio_devices import PulseDeviceMonitor
 from worker import PlayerWorker, Settings
 from i18n import I18n, Message, Diagnostic, message
 import sdk_compare
@@ -120,6 +121,9 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(native_page,''); self.setup_compare()
         outputs=QHBoxLayout(); outputs.addWidget(self.label('output_device')); self.device=QComboBox(); self.devices=QMediaDevices.audioOutputs()
         self.media_devices=QMediaDevices(self)
+        self._pulse_ids=None
+        self.pulse_monitor=PulseDeviceMonitor(self)
+        self.pulse_monitor.snapshot.connect(self.pulse_devices_changed)
         self.selected_device_id=bytes(self.devices[0].id()) if self.devices else None
         self.bind(self.device,'choose_device',setter='setPlaceholderText')
         for device in self.devices: self.device.addItem(device.description())
@@ -274,10 +278,21 @@ class MainWindow(QMainWindow):
         index=self.device.currentIndex()
         return self.devices[index] if 0<=index<len(self.devices) else None
 
+    def pulse_devices_changed(self, identifiers):
+        # Activate only after matching the Qt device IDs to the Pulse namespace.
+        # Other platforms/backends must not be filtered by unrelated Pulse names.
+        if self._pulse_ids is None and not any(bytes(d.id()) in identifiers for d in self.devices):
+            return
+        if identifiers != self._pulse_ids:
+            self._pulse_ids=identifiers
+            self.refresh_devices()
+
     def refresh_devices(self):
         if self.closing: return
         previous=self.selected_device_id
         self.devices=QMediaDevices.audioOutputs()
+        if self._pulse_ids is not None:
+            self.devices=[d for d in self.devices if bytes(d.id()) in self._pulse_ids]
         identifiers=[bytes(device.id()) for device in self.devices]
         # Names/positions may change while stable IDs do not. Never silently
         # choose a different speaker when the selected endpoint disappears.
@@ -462,11 +477,11 @@ class MainWindow(QMainWindow):
         if not self.closing:
             self.closing=True
             self.timer.stop(); self.debounce.stop(); self.pump.close(); self.media.stop()
-            self.cancel.set(); self.worker.stop_worker()
+            self.cancel.set(); self.worker.stop_worker(); self.pulse_monitor.stop()
             self.pool.shutdown(wait=False,cancel_futures=True)
             self.centralWidget().setEnabled(False)
             self.bind(self.native_status,'close_pending')
-        if self.worker.is_alive() or (self.job is not None and not self.job.done()):
+        if self.worker.is_alive() or self.pulse_monitor.running or (self.job is not None and not self.job.done()):
             # Keep Qt processing events; the native owner may still be reading a
             # file. Temporary storage must outlive both native and SDK jobs.
             QTimer.singleShot(25,self.close)
