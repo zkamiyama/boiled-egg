@@ -3,30 +3,84 @@ name: dataset-tools
 on:
   push:
     paths:
-      - "eval/tsm_dataset.py"
-      - "eval/import_tsm_dataset.py"
-      - "eval/run_tsm_benchmark.py"
-      - "eval/test_tsm_dataset.py"
-      - "eval/make_tsm_listening_pack.py"
+      - "eval/**"
+      - "docs/benchmarks/FIXED_PREDICTOR*"
       - "requirements-dev.txt"
       - ".github/workflows/dataset-tools.yml"
   pull_request:
     paths:
       - "eval/**"
+      - "docs/benchmarks/FIXED_PREDICTOR*"
       - "requirements-dev.txt"
       - ".github/workflows/dataset-tools.yml"
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+defaults:
+  run:
+    shell: bash
+env:
+  OPENBLAS_NUM_THREADS: 1
+  OMP_NUM_THREADS: 1
 
 jobs:
   python-tools:
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.13']
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
       - name: Dependencies
         run: |
+          mkdir validation
           sudo apt-get update
           sudo apt-get install -y libsndfile1
-          python3 -m pip install --user -r requirements-dev.txt
+          python -m pip install numpy==2.3.5 scipy==1.17.0 soundfile==0.13.1
+          python -m pip freeze > validation/PYTHON_VERSIONS.txt
+          dpkg-query -W libsndfile1 > validation/SYSTEM_VERSIONS.txt
       - name: Compile
-        run: python3 -m py_compile eval/tsm_dataset.py eval/import_tsm_dataset.py eval/run_tsm_benchmark.py eval/make_tsm_listening_pack.py
-      - name: Unit test with generated mini-dataset
-        run: python3 -m unittest -v eval/test_tsm_dataset.py
+        run: python -m py_compile eval/tsm_dataset.py eval/import_tsm_dataset.py eval/run_tsm_benchmark.py eval/make_tsm_listening_pack.py eval/fixed_predictor.py eval/test_fixed_predictor.py
+      - name: Exact nonempty unit execution, including existing importer
+        run: |
+          PYTHONPATH=eval python -W error::ResourceWarning - <<'PY' 2>&1 | tee validation/unit.log
+          import json, unittest
+          suite = unittest.defaultTestLoader.loadTestsFromNames(['test_tsm_dataset', 'test_fixed_predictor'])
+          def ids(node):
+              if isinstance(node, unittest.TestSuite):
+                  return [item for child in node for item in ids(child)]
+              return [node.id()]
+          names = ids(suite)
+          assert len(names) == len(set(names)) == 13, names
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          ok = result.wasSuccessful() and result.testsRun == 13 and not result.skipped
+          with open('validation/unit.json', 'w') as stream:
+              json.dump(dict(expected=13, executed=result.testsRun, skipped=len(result.skipped),
+                             passed=ok, test_ids=names), stream, indent=2)
+          raise SystemExit(0 if ok else 1)
+          PY
+      - name: Full synthetic CLI calibration and rejection receipts
+        run: python eval/test_fixed_predictor.py --evidence validation/calibration 2>&1 | tee validation/calibration.log
+      - name: Record exact source and evidence identity
+        if: always()
+        run: |
+          mkdir -p validation
+          git rev-parse HEAD > validation/COMMIT.txt
+          git rev-parse HEAD^{tree} > validation/TREE.txt
+          git ls-files -z | xargs -0 sha256sum > validation/SOURCE_SHA256SUMS
+          tar -czf validation/source.tar.gz --null -T <(git ls-files -z)
+          find validation -type f ! -name EVIDENCE_SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > validation/EVIDENCE_SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fixed-predictor-${{ matrix.python }}
+          path: validation
+          if-no-files-found: error
