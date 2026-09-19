@@ -123,6 +123,9 @@ class MainWindow(QMainWindow):
         self.selected_device_id=bytes(self.devices[0].id()) if self.devices else None
         self.bind(self.device,'choose_device',setter='setPlaceholderText')
         for device in self.devices: self.device.addItem(device.description())
+        # A placeholder keeps an initially empty QComboBox at index -1 even
+        # after adding devices. Select only at startup; hotplug never reroutes.
+        if self.devices: self.device.setCurrentIndex(0)
         if not self.devices:
             self.device.addItem(''); self._combo_bindings.append((self.device,[message('no_device')]))
         outputs.addWidget(self.device,1); self.rate=QComboBox(); self.rate.addItems(['44100','48000','96000']); self.rate.setCurrentText('48000'); outputs.addWidget(self.rate)

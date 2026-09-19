@@ -21,6 +21,17 @@ class DeviceTests(unittest.TestCase):
         self.addCleanup(close_window,w)
         return w,a,b
 
+    def test_startup_explicitly_selects_first_listed_device(self):
+        # Setting a QComboBox placeholder before adding items leaves index -1.
+        # Its visible device list is not evidence of an actual selection.
+        w,a,b=self.window()
+        self.assertEqual(w.device.currentIndex(),0)
+        self.assertIs(w.selected_device(),a)
+        self.assertEqual(w.selected_device_id,bytes(a.id()))
+        w.change_language('ja')
+        self.assertEqual(w.device.currentIndex(),0)
+        self.assertIs(w.selected_device(),a)
+
     def test_reordering_keeps_selected_device_without_resetting_dsp(self):
         w,a,b=self.window()
         with patch.object(w.worker,'command') as commands, patch.object(w.pump,'close') as close:
