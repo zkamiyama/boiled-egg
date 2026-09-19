@@ -6,23 +6,125 @@ on:
     paths: ['research/offline_pv/**', 'eval/offline_pv*', 'eval/test_offline_pv*', 'docs/benchmarks/OFFLINE_PV*', '.github/workflows/offline-pv.yml']
 permissions:
   contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+defaults:
+  run:
+    shell: bash
+env:
+  OMP_NUM_THREADS: 1
+  OPENBLAS_NUM_THREADS: 1
 jobs:
-  legacy-source:
+  core:
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: gcc20, compiler: g++, standard: 20, sanitize: 'OFF'}
+          - {name: gcc23, compiler: g++, standard: 23, sanitize: 'OFF'}
+          - {name: clang20, compiler: clang++, standard: 20, sanitize: 'OFF'}
+          - {name: clang23, compiler: clang++, standard: 23, sanitize: 'OFF'}
+          - {name: asan-ubsan, compiler: clang++, standard: 20, sanitize: 'ON'}
     steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Build isolated research core
+        run: |
+          mkdir evidence
+          cmake -S research/offline_pv -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} -DCMAKE_CXX_STANDARD=${{ matrix.standard }} -DOFFLINE_PV_SANITIZE=${{ matrix.sanitize }} 2>&1 | tee evidence/config.log
+          cmake --build build -j2 2>&1 | tee evidence/build.log
+      - name: Five declared unique enabled tests, five executed passes, no skips
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: python3 quality/audition/run_ctest.py --build build --expected 5 2>&1 | tee evidence/ctest.log
+      - name: Retain test and compiler identities
+        if: always()
+        run: |
+          git rev-parse HEAD > evidence/COMMIT.txt
+          ${{ matrix.compiler }} --version > evidence/COMPILER.txt
+          find build/Testing -type f -exec cp --parents '{}' evidence \; || true
+          find build -maxdepth 1 -type f -executable -exec sha256sum '{}' \; > evidence/BINARY_SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: offline-core-${{ matrix.name }}
+          path: evidence
+          if-no-files-found: error
+  comparison:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
       - uses: actions/checkout@v4
         with:
           ref: dd04c9388443ff3358af34b85ca5a5c880f45e71
+          path: external/legacy
           persist-credentials: false
-      - name: Archive exact historical control; not a test result
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - name: Fixed numerical environment
         run: |
           mkdir evidence
+          python -m pip install numpy==2.3.5 scipy==1.17.0 soundfile==0.13.1
+          python -m pip freeze > evidence/PYTHON_VERSIONS.txt
+          g++ --version > evidence/COMPILER.txt
+          uname -a > evidence/SYSTEM.txt
+      - name: Build actual current SDK, exact historical native control, isolated candidate
+        run: |
+          cmake -S . -B build-main -DCMAKE_BUILD_TYPE=Release -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON 2>&1 | tee evidence/config-main.log
+          cmake --build build-main -j2 2>&1 | tee evidence/build-main.log
+          cmake -S external/legacy/research/cpp_pv_rt -B build-legacy -DCMAKE_BUILD_TYPE=Release 2>&1 | tee evidence/config-legacy.log
+          cmake --build build-legacy -j2 2>&1 | tee evidence/build-legacy.log
+          cmake -S research/offline_pv -B build-offline -DCMAKE_BUILD_TYPE=Release 2>&1 | tee evidence/config-offline.log
+          cmake --build build-offline -j2 2>&1 | tee evidence/build-offline.log
+      - name: Validate full actual CTest inventories and executions
+        run: |
+          python quality/audition/run_ctest.py --build build-main --expected 26 2>&1 | tee evidence/ctest-main.log
+          python quality/audition/run_ctest.py --build build-legacy --expected 6 2>&1 | tee evidence/ctest-legacy.log
+          python quality/audition/run_ctest.py --build build-offline --expected 5 2>&1 | tee evidence/ctest-offline.log
+      - name: Calibrate measurements and real CLI with exact nonempty Python tests
+        run: |
+          export BOILED_EGG_OFFLINE_CLI="$PWD/build-offline/boiled_egg_offline_pv"
+          PYTHONPATH=eval python - <<'PY' 2>&1 | tee evidence/python.log
+          import json, unittest
+          suite = unittest.defaultTestLoader.loadTestsFromNames(['test_offline_pv','test_tsm_dataset','test_fixed_predictor','test_comparison_contract'])
+          def ids(s):
+              if isinstance(s, unittest.TestSuite): return [x for child in s for x in ids(child)]
+              return [s.id()]
+          names = ids(suite)
+          assert len(names) == len(set(names)) == 41, names
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          passed = result.wasSuccessful() and result.testsRun == 41 and not result.skipped
+          with open('evidence/python.json','w') as f:
+              json.dump(dict(expected=41,executed=result.testsRun,skipped=len(result.skipped),passed=passed,test_ids=names),f,indent=2)
+          raise SystemExit(0 if passed else 1)
+          PY
+      - name: Freeze source, binary and complete grid before measurement
+        run: |
+          python eval/offline_pv_benchmark.py prepare --sdk build-main/boiled_egg_backend_cli --legacy build-legacy/boiled_egg_multires_rt_cli --offline build-offline/boiled_egg_offline_pv --output evidence/experiment | tee evidence/PLAN_SHA256.txt
+      - name: All 210 settings times three complete runs; quality failures are retained, not called test failures
+        run: |
+          python eval/offline_pv_benchmark.py run --plan evidence/experiment/plan.json --plan-sha256 "$(cat evidence/PLAN_SHA256.txt)" --output evidence/results 2>&1 | tee evidence/benchmark.log
+      - name: Archive exact source and every evidence hash even on failure
+        if: always()
+        run: |
+          mkdir -p evidence
           git rev-parse HEAD > evidence/COMMIT.txt
           git rev-parse HEAD^{tree} > evidence/TREE.txt
           git ls-files -z | xargs -0 sha256sum > evidence/SOURCE_SHA256SUMS
           git archive --format=tar.gz HEAD > evidence/source.tar.gz
+          git -C external/legacy rev-parse HEAD > evidence/LEGACY_COMMIT.txt
+          git -C external/legacy rev-parse HEAD^{tree} > evidence/LEGACY_TREE.txt
+          git -C external/legacy archive --format=tar.gz HEAD > evidence/legacy-source.tar.gz
+          for b in build-main build-legacy build-offline; do find "$b/Testing" -type f -exec cp --parents '{}' evidence \; || true; done
+          find evidence -type f ! -name EVIDENCE_SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > evidence/EVIDENCE_SHA256SUMS
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: legacy-multires-source
+          name: offline-pv-full-screen
           path: evidence
           if-no-files-found: error
