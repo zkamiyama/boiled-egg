@@ -1,3 +1,4 @@
+from test_helpers import close_window
 """Output errors, stale callbacks and recovery; no sound hardware is assumed."""
 import os
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
@@ -42,5 +43,5 @@ class OutputTests(unittest.TestCase):
             w.pump.tick()
             self.assertFalse(w.playing);self.assertFalse(w.pump.running);self.assertIsNone(w.pump.io)
             self.assertIn('書込み',w.log.toPlainText())
-        finally:w.close();QT.processEvents()
+        finally:close_window(w)
 if __name__=='__main__':unittest.main()

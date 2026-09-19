@@ -1,3 +1,4 @@
+from test_helpers import close_window
 """Drive the real GUI/worker batch and cancellation without a sound device."""
 import os
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
@@ -54,7 +55,7 @@ class NativeBatchUITests(unittest.TestCase):
                     window.save_comparison()
                 self.assertTrue(target.is_file());self.assertTrue(target.with_suffix('.wav.json').is_file())
                 self.assertFalse(window.playing)
-            finally:window.close();QT.processEvents()
+            finally:close_window(window)
 
     def test_native_export_cancellation_preserves_existing_files(self):
         with tempfile.TemporaryDirectory() as d:
@@ -80,6 +81,6 @@ class NativeBatchUITests(unittest.TestCase):
             self.assertTrue(window.native_batch_button.isEnabled())
             self.assertTrue(window.native_export_button.isEnabled())
             self.assertIn('busy queue',window.log.toPlainText())
-        finally:window.close();QT.processEvents()
+        finally:close_window(window)
 
 if __name__=='__main__':unittest.main()

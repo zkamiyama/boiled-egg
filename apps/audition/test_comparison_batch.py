@@ -1,3 +1,4 @@
+from test_helpers import close_window
 """Actual SDK batch rendering and GUI selection without audio hardware."""
 import json
 import os
@@ -88,7 +89,7 @@ class BatchTests(unittest.TestCase):
                 w.load(p);until(lambda:w.native_ready and w.source_path==p)
                 w.seek(.125);until(lambda:abs(w.wave.position-.125)<1e-9)
                 self.assertFalse(w.playing)
-            finally:w.close();QT.processEvents()
+            finally:close_window(w)
     def test_gui_batch_selection_and_raw_save(self):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d)/'tone.wav';write_tone(p);w=MainWindow()
@@ -103,6 +104,6 @@ class BatchTests(unittest.TestCase):
                 batch.save_result(w.reference_path,Path(d)/'selection.wav')
                 self.assertTrue((Path(d)/'selection.wav.json').is_file())
                 self.assertTrue(w.batch_button.isEnabled())
-            finally:w.close();QT.processEvents()
+            finally:close_window(w)
 
 if __name__=='__main__':unittest.main()

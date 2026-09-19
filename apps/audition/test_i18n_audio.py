@@ -1,3 +1,4 @@
+from test_helpers import close_window
 """App-owned output errors must switch languages; external diagnostics stay raw.
 
 Exercise the actual no-device and failed-write paths. No sound hardware, DSP
@@ -38,7 +39,7 @@ class AudioLanguageTests(unittest.TestCase):
         window = MainWindow(language='en', preferences=self.preferences)
         window.timer.stop(); window.debounce.stop()
         def close():
-            window.close(); QT.processEvents()
+            close_window(window)
         self.addCleanup(close)
         return window
 

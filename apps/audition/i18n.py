@@ -12,6 +12,8 @@ from PySide6.QtWidgets import QApplication
 
 LANGUAGES = ('ja', 'en')
 CATALOG = {
+    'choose_device': ('出力先を選択', 'Select an output device'),
+    'device_removed': ('選択した音声デバイスが切断されました。別の出力先を選んでください。原音は保持しています。', 'The selected audio device was disconnected. Select an output device. The source is retained.'),
     'language': ('言語', 'Language'),
     'subtitle': ('C++ネイティブ再生 · 速度0＝フリーズ · ピッチ0 st＝音程変更なし', 'C++ native transport · speed 0 = freeze · pitch 0 st = original pitch'),
     'open_audio': ('音声を開く', 'Open audio'),
@@ -84,7 +86,7 @@ CATALOG = {
     'render_progress': ('比較合成 {completed}/{total} — {status}', 'Comparison {completed}/{total} — {status}'),
     'ended': ('原音終端・tail出力完了', 'End of source; tail output complete'),
     'render_failed': ('比較レンダー未完了（代替処理なし）', 'Comparison incomplete (no fallback)'),
-    'close_pending': ('ファイル処理終了を待ってから再度閉じてください。', 'Close again after the file operation has stopped.'),
+    'close_pending': ('処理を中止して終了しています…', 'Cancelling operations and closing…'),
     'settings_failed': ('言語設定を保存できませんでした。この起動中の表示には反映しています。', 'Could not save the language preference. The current session uses the selected language.'),
     'source_loaded_pcm': ('読込み済み原音PCM', 'Loaded source PCM'),
     'comparison_detail': ('{source} | {frames} フレーム | 生ピーク {peak:.3f}', '{source} | {frames} frames | Raw peak {peak:.3f}'),

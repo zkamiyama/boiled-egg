@@ -70,10 +70,11 @@ class Control(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self,library=None,sdk=None,language=None,preferences=None):
         super().__init__(); self.setWindowTitle('boiled egg — Audition Lab'); self.resize(1110,810)
+        self.closing=False; self.closed=False
         self.i18n=I18n(language,preferences)
         self._text_bindings={}; self._combo_bindings=[]; self._log_entries=deque(maxlen=80)
         self.library=library; self.sdk=sdk; self.source_path=None; self.reference_path=None; self.playing=False; self.eof=False
-        self.last_speed=1.; self.duration=0.; self.native_ready=False; self.native_busy=False; self.last_state={}; self.comparisons=[]
+        self.last_speed=1.; self.duration=0.; self.native_ready=False; self.native_busy=False; self.last_state={}; self.comparisons=[]; self.stream_format=None
         self.temporary=tempfile.TemporaryDirectory(prefix='boiled-egg-audition-')
         self.pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='sdk-compare'); self.job=None; self.cancel=threading.Event()
         self.worker=PlayerWorker(library); self.worker.start(); self.pump=OutputPump(self.worker.audio,self)
@@ -118,6 +119,9 @@ class MainWindow(QMainWindow):
         self.native_status=self.label('idle',wrap=True); nl.addWidget(self.native_status); nl.addStretch()
         self.tabs.addTab(native_page,''); self.setup_compare()
         outputs=QHBoxLayout(); outputs.addWidget(self.label('output_device')); self.device=QComboBox(); self.devices=QMediaDevices.audioOutputs()
+        self.media_devices=QMediaDevices(self)
+        self.selected_device_id=bytes(self.devices[0].id()) if self.devices else None
+        self.bind(self.device,'choose_device',setter='setPlaceholderText')
         for device in self.devices: self.device.addItem(device.description())
         if not self.devices:
             self.device.addItem(''); self._combo_bindings.append((self.device,[message('no_device')]))
@@ -128,6 +132,7 @@ class MainWindow(QMainWindow):
         for control in (self.speed,self.pitch,self.formant): control.changed.connect(self.controls_changed)
         self.mode.currentIndexChanged.connect(self.structure_changed); self.policy.currentIndexChanged.connect(self.structure_changed)
         self.rate.currentIndexChanged.connect(self.structure_changed); self.device.currentIndexChanged.connect(self.device_changed)
+        self.media_devices.audioOutputsChanged.connect(self.refresh_devices)
         self.volume.changed.connect(self.volume_changed); self.tabs.currentChanged.connect(lambda _:self.pause())
         self.language_combo.currentIndexChanged.connect(lambda _:self.change_language(self.language_combo.currentData()))
         self.timer=QTimer(self); self.timer.setInterval(5); self.timer.timeout.connect(self.poll); self.timer.start()
@@ -213,6 +218,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(page,'')
 
     def send(self,kind,value=None):
+        if self.closing: return
         try: self.worker.command(kind,value)
         except Exception as exc: self.show_error(str(exc))
     def output_failed(self,text):
@@ -261,8 +267,38 @@ class MainWindow(QMainWindow):
         if hasattr(self,'play_button'): self.bind(self.play_button,'play')
         if hasattr(self,'media'): self.media.pause()
     def seek(self,seconds): self.pause(); self.send('seek',seconds)
+    def selected_device(self):
+        index=self.device.currentIndex()
+        return self.devices[index] if 0<=index<len(self.devices) else None
+
+    def refresh_devices(self):
+        if self.closing: return
+        previous=self.selected_device_id
+        self.devices=QMediaDevices.audioOutputs()
+        identifiers=[bytes(device.id()) for device in self.devices]
+        # Names/positions may change while stable IDs do not. Never silently
+        # choose a different speaker when the selected endpoint disappears.
+        self._combo_bindings=[binding for binding in self._combo_bindings if binding[0] is not self.device]
+        with QSignalBlocker(self.device):
+            self.device.clear()
+            for device in self.devices: self.device.addItem(device.description())
+            if not self.devices:
+                self.device.addItem(self.text('no_device'))
+                self._combo_bindings.append((self.device,[message('no_device')]))
+            self.device.setCurrentIndex(identifiers.index(previous) if previous in identifiers else -1)
+        if previous is not None and previous not in identifiers:
+            self.selected_device_id=None
+            self.pause(); self.pump.close(); self.media.stop()
+            self.show_error(message('device_removed'))
+
     def device_changed(self):
-        if self.native_ready: self.seek(self.wave.position)
+        if self.closing: return
+        device=self.selected_device()
+        self.selected_device_id=bytes(device.id()) if device is not None else None
+        self.pause(); self.pump.close(); self.media.stop()
+        if device is not None and self.stream_format is not None:
+            # A device change does not seek/reset the native synthesis history.
+            if self.pump.configure(device,**self.stream_format): self.volume_changed()
     def volume_changed(self):
         value=self.volume.value()/100
         if self.pump.sink: self.pump.sink.setVolume(value)
@@ -358,21 +394,25 @@ class MainWindow(QMainWindow):
     def play_reference(self):
         if not self.reference_path: self.show_error(message('reference_first')); return
         self.pause()
-        if not self.devices: self.show_error(message('device_unavailable')); return
-        self.media_output.setDevice(self.devices[self.device.currentIndex()]); self.media.setSource(QUrl.fromLocalFile(str(self.reference_path))); self.media.play()
+        device=self.selected_device()
+        if device is None: self.show_error(message('device_unavailable')); return
+        self.media_output.setDevice(device); self.media.setSource(QUrl.fromLocalFile(str(self.reference_path))); self.media.play()
     def telemetry(self,state):
         self.last_state=state; self.wave.position=state['source_position']/self.worker.source_rate; self.wave.update()
         self.bind(self.native_status,'telemetry',state=message('frozen_status' if state['speed']==0 else 'playing_status'),
                   source=self.wave.position,output=state['output_frames']/int(self.rate.currentText()),
                   pitch=state['pitch_semitones'],peak=state['peak'],warning=message('peak_warning' if state['peak']>1 else 'empty'))
     def poll(self):
+        if self.closing: return
         for _ in range(12):
             try: kind,data=self.worker.messages.get_nowait()
             except queue.Empty: break
             if kind=='ready':
                 resume_requested=self.playing; self.native_ready=True; self.playing=False; self.bind(self.play_button,'play'); self.eof=False
                 from PySide6.QtMultimedia import QAudioDevice
-                device=self.devices[self.device.currentIndex()] if self.devices else QAudioDevice()
+                self.stream_format=dict(data)
+                device=self.selected_device()
+                if device is None: device=QAudioDevice()
                 if self.pump.configure(device,**data):
                     self.volume_changed()
                     if resume_requested and self.pump.play():
@@ -416,10 +456,19 @@ class MainWindow(QMainWindow):
         urls=event.mimeData().urls()
         if urls and urls[0].isLocalFile(): self.load(urls[0].toLocalFile())
     def closeEvent(self,event):
-        self.timer.stop(); self.debounce.stop(); self.pump.close(); self.media.stop(); self.cancel.set(); self.worker.stop_worker()
-        self.worker.join(3); self.pool.shutdown(wait=True,cancel_futures=True)
-        if self.worker.is_alive(): self.show_error(message('close_pending')); self.timer.start(); event.ignore(); return
-        self.temporary.cleanup(); event.accept()
+        if not self.closing:
+            self.closing=True
+            self.timer.stop(); self.debounce.stop(); self.pump.close(); self.media.stop()
+            self.cancel.set(); self.worker.stop_worker()
+            self.pool.shutdown(wait=False,cancel_futures=True)
+            self.centralWidget().setEnabled(False)
+            self.bind(self.native_status,'close_pending')
+        if self.worker.is_alive() or (self.job is not None and not self.job.done()):
+            # Keep Qt processing events; the native owner may still be reading a
+            # file. Temporary storage must outlive both native and SDK jobs.
+            QTimer.singleShot(25,self.close)
+            event.ignore(); return
+        self.temporary.cleanup(); self.closed=True; event.accept()
 
 
 STYLE='''
@@ -445,6 +494,7 @@ def main():
     window=MainWindow(args.library,args.sdk_cli,language=args.language); window.show()
     if args.file: window.load(args.file)
     elif args.demo or args.smoke: window.demo()
+    if args.smoke: app.setQuitOnLastWindowClosed(False)
     if args.smoke or args.screenshot:
         deadline=time.monotonic()+10
         def capture():
@@ -456,7 +506,11 @@ def main():
                 success=window.grab().save(str(args.screenshot)) and success
             if args.smoke:
                 print('Standalone native source ready' if success else 'Standalone smoke failed: source/library unavailable',flush=True)
-                window.close(); app.exit(0 if success else 1)
+                window.close()
+                def finish():
+                    if window.closed: app.exit(0 if success else 1)
+                    else: QTimer.singleShot(25,finish)
+                finish()
         QTimer.singleShot(200,capture)
     return app.exec()
 

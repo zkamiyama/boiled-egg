@@ -1,3 +1,4 @@
+from test_helpers import close_window
 """Native bindings, worker lifecycle, Qt controls and exact existing-SDK probes."""
 import os
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
@@ -116,7 +117,7 @@ class AppTests(unittest.TestCase):
             self.assertEqual(w.policy.currentIndex(),0);self.assertEqual(w.formant.value(),0)
             self.assertFalse(w.policy.isEnabled())
             self.assertEqual(w.mode.count(),6);self.assertEqual(w.sdk_mode.count(),5)
-        finally:w.close();QT.processEvents()
+        finally:close_window(w)
         self.assertFalse(w.worker.is_alive())
     def test_sdk_rejects_unsupported_no_substitution(self):
         for index,speed,pitch,policy,formant in [(3,0,0,'off',0),(3,4,0,'off',0),(0,1,0,'harmonic',0),(4,1,13,'off',0),(0,1,0,'off',1)]:

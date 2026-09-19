@@ -1,3 +1,4 @@
+from test_helpers import close_window
 """Presentation-only localization tests, including a real native owner thread.
 
 All preferences use temporary INI files; tests never change a user's language.
@@ -46,7 +47,7 @@ class LanguageTests(unittest.TestCase):
     def window(self, language='ja'):
         w = MainWindow(language=language, preferences=self.preferences)
         def close():
-            w.close()
+            close_window(w)
             QT.processEvents()
         self.addCleanup(close)
         return w
