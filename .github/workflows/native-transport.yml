@@ -1,0 +1,84 @@
+name: native-transport
+on:
+  push:
+    paths: ['sdk/transport/**', 'apps/audition/**', '.github/workflows/native-transport.yml']
+  pull_request:
+    paths: ['sdk/transport/**', 'apps/audition/**', '.github/workflows/native-transport.yml']
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        standard: [20, 23]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build and test output-driven transport
+        env:
+          COMPILER: ${{ matrix.compiler }}
+          STANDARD: ${{ matrix.standard }}
+        run: |
+          mkdir validation
+          if test "$COMPILER" = clang; then export CC=clang CXX=clang++; else export CC=gcc CXX=g++; fi
+          cmake -S sdk/transport -B build-transport -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD="$STANDARD"
+          cmake --build build-transport -j2
+          ctest --test-dir build-transport --output-on-failure | tee validation/ctest.log
+          build-transport/transport_test | tee validation/contract.log
+          bash sdk/transport/test_installed.sh build-transport | tee validation/installed.log
+      - name: Source identity
+        if: always()
+        run: |
+          mkdir -p validation
+          git rev-parse HEAD > validation/COMMIT.txt
+          git rev-parse HEAD^{tree} > validation/TREE.txt
+          git archive --format=tar.gz --prefix=boiled-egg/ HEAD > validation/source.tar.gz
+          git ls-files -z | xargs -0 sha256sum > validation/SOURCE_SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-transport-${{ matrix.compiler }}-${{ matrix.standard }}-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7
+  sanitizer:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Instrument native transport
+        run: |
+          cmake -S sdk/transport -B build-transport -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DBE_TRANSPORT_SANITIZE=ON
+          cmake --build build-transport -j2
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 ctest --test-dir build-transport --output-on-failure
+
+  thread-sanitizer:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Instrument independent native owners and concurrent table construction
+        run: |
+          mkdir validation
+          cmake -S sdk/transport -B build-thread -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBE_TRANSPORT_THREAD_SANITIZE=ON
+          cmake --build build-thread --target transport_threads_test -j2
+          TSAN_OPTIONS=halt_on_error=1 ctest --test-dir build-thread -R '^transport_threads$' --output-on-failure | tee validation/threads.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-threads-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7

@@ -1,0 +1,123 @@
+name: audition-app
+on:
+  push:
+    paths: ['apps/audition/**', 'sdk/transport/**', 'run_audition.py', 'requirements-audition.txt', 'scripts/build_audition.sh', 'scripts/package_audition.py', 'quality/audition/**', '.github/workflows/audition-app.yml']
+  pull_request:
+    paths: ['apps/audition/**', 'sdk/transport/**', 'run_audition.py', 'requirements-audition.txt', 'scripts/build_audition.sh', 'scripts/package_audition.py', 'quality/audition/**', '.github/workflows/audition-app.yml']
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  QT_QPA_PLATFORM: offscreen
+  OPENBLAS_NUM_THREADS: 1
+  OMP_NUM_THREADS: 1
+jobs:
+  standalone:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pinned GUI dependencies and build native code
+        run: |
+          mkdir validation
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libopengl0 libpulse0 pulseaudio pulseaudio-utils libsndfile1 libxcb-cursor0 libxkbcommon-x11-0 fonts-noto-cjk
+          python -m pip install -r requirements-audition.txt
+          python -m pip freeze > validation/PYTHON_VERSIONS.txt
+          bash scripts/build_audition.sh | tee validation/build.log
+      - name: Controls, language switching, worker and all five actual SDK modes
+        run: |
+          export BOILED_EGG_TRANSPORT_LIBRARY="$PWD/build-transport/libboiled_egg_transport.so"
+          export BOILED_EGG_SDK_CLI="$PWD/build-sdk/boiled_egg_backend_cli"
+          python -W error::ResourceWarning -m unittest discover -s apps/audition -p 'test_*.py' -v 2>&1 | tee validation/app-tests.log
+          for language in ja en; do
+            python run_audition.py --language "$language" --smoke --screenshot "validation/standalone-$language.png" 2>&1 | tee "validation/gui-$language.log"
+            test -s "validation/standalone-$language.png"
+          done
+      - uses: actions/checkout@v4
+        with:
+          repository: zkamiyama/boiled-egg
+          ref: d8e835d60e364f11dabbe9a23a531cdb29016b29
+          path: .main-reference
+          persist-credentials: false
+      - name: Protected main sources and unchanged default SDK contracts
+        run: |
+          python -m unittest discover -s quality/audition -v 2>&1 | tee validation/scope-tests.log
+          python quality/audition/audit_scope.py --reference .main-reference --candidate . --output validation/main-scope.json
+          # build_audition.sh deliberately builds only the CLI (tests OFF).
+          # Reconfigure explicitly: ctest alone returns success with zero tests.
+          cmake -S . -B build-sdk -DCMAKE_BUILD_TYPE=Release \
+            -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON -DBOILED_EGG_BUILD_TESTS=ON
+          cmake --build build-sdk -j2
+          python quality/audition/run_ctest.py --build build-sdk --expected 26 | tee validation/sdk-on.log
+          cmake -S . -B build-default -G Ninja -DCMAKE_BUILD_TYPE=Release -DBOILED_EGG_BUILD_TESTS=ON
+          cmake --build build-default -j2
+          python quality/audition/run_ctest.py --build build-default --expected 13 | tee validation/sdk-off.log
+      - name: Actual Qt audio route and device removal on isolated software sink
+        run: |
+          python apps/audition/verify_audio_route.py --output validation/qt-loopback 2>&1 | tee validation/qt-loopback.log
+      - name: Independent held-tone pitch and memory checks
+        run: |
+          export BOILED_EGG_TRANSPORT_LIBRARY="$PWD/build-transport/libboiled_egg_transport.so"
+          python apps/audition/assess_freeze.py --output validation/freeze | tee validation/freeze.log
+          python apps/audition/assess_range.py --output validation/range | tee validation/range.log
+      - name: Relocated bilingual package and failed-load negative control
+        run: |
+          python scripts/package_audition.py --output "$RUNNER_TEMP/audition-package"
+          unset BOILED_EGG_TRANSPORT_LIBRARY BOILED_EGG_SDK_CLI
+          python -W error::ResourceWarning -m unittest discover -s "$RUNNER_TEMP/audition-package/apps/audition" -p 'test_*.py' -v 2>&1 | tee validation/relocated-tests.log
+          for language in ja en; do
+            python "$RUNNER_TEMP/audition-package/run_audition.py" --language "$language" --smoke 2>&1 | tee "validation/relocated-$language.log"
+          done
+          if python "$RUNNER_TEMP/audition-package/run_audition.py" --language en --smoke --library "$RUNNER_TEMP/missing-native.so" > validation/negative-gui.log 2>&1; then
+            echo 'Missing native library was incorrectly accepted'; exit 1
+          else
+            status=$?
+            test "$status" -eq 1
+          fi
+          cp "$RUNNER_TEMP/audition-package/MANIFEST.json" validation/PACKAGE_MANIFEST.json
+          python - <<'PY'
+          import hashlib, json, os, shutil, zipfile
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP']) / 'audition-package'
+          manifest = json.loads((root / 'MANIFEST.json').read_text())
+          assert manifest['languages'] == ['ja', 'en']
+          for name, expected in manifest['files'].items():
+              assert hashlib.sha256((root / name).read_bytes()).hexdigest() == expected, name
+          for directory in root.rglob('__pycache__'):
+              shutil.rmtree(directory)
+          archive = Path('validation/audition-linux-x86_64-ja-en.zip')
+          with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as z:
+              for path in sorted(root.rglob('*')):
+                  if path.is_file():
+                      z.write(path, path.relative_to(root))
+          with zipfile.ZipFile(archive) as z:
+              assert z.testzip() is None
+          Path('validation/PACKAGE_SHA256.txt').write_text(hashlib.sha256(archive.read_bytes()).hexdigest() + '\n')
+          print('Bilingual archive and all package file hashes verified')
+          PY
+      - name: Exact tested source identity
+        if: always()
+        run: |
+          mkdir -p validation
+          git rev-parse HEAD > validation/COMMIT.txt
+          git rev-parse HEAD^{tree} > validation/TREE.txt
+          git archive --format=tar.gz --prefix=boiled-egg/ HEAD > validation/source.tar.gz
+          git ls-files -z | xargs -0 sha256sum > validation/SOURCE_SHA256SUMS
+          if test -f build-transport/libboiled_egg_transport.so; then sha256sum build-transport/libboiled_egg_transport.so build-sdk/boiled_egg_backend_cli build-sdk/libboiled_egg.so > validation/BINARY_SHA256SUMS; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: audition-app-${{ github.sha }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 7

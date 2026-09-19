@@ -1,0 +1,23 @@
+name: audition-dependencies
+on:
+  push:
+    branches: ['app/pyside6-audition-lab']
+    paths: ['.github/workflows/audition-dependencies.yml']
+permissions:
+  contents: read
+jobs:
+  dependencies:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Obtain official runtime wheels for local verification
+        run: |
+          python -m pip download --only-binary=:all: --dest wheels PySide6==6.9.3
+          sha256sum wheels/* > wheels/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: audition-qt-runtime-6.9.3
+          path: wheels/
+          retention-days: 3
