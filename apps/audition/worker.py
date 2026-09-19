@@ -37,6 +37,7 @@ class PlayerWorker(threading.Thread):
         self.render_cancel=threading.Event()
         self.source=None;self.source_rate=48000;self.handle=None;self.playing=False;self.epoch=0
     def command(self, kind, value=None):
+        if self.quit_event.is_set(): raise RuntimeError('Player worker is closing')
         try:self.commands.put_nowait((kind,value))
         except queue.Full:raise RuntimeError('Command queue full; wait for current load/render to finish')
     def stop_worker(self):self.render_cancel.set();self.quit_event.set()
@@ -136,11 +137,12 @@ class PlayerWorker(threading.Thread):
         try:
             while not self.quit_event.is_set():
                 try:
-                    while True:
+                    while not self.quit_event.is_set():
                         kind,value=self.commands.get_nowait();self._apply(kind,value)
                 except queue.Empty:pass
                 except Exception as exc:
                     self.playing=False;self.messages.put(('error',str(exc)))
+                if self.quit_event.is_set(): break
                 if self.playing and self.handle and not self.audio.full():
                     try:
                         output=self.handle.render(1024)

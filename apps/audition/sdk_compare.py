@@ -42,19 +42,31 @@ def validate(index, speed, pitch, policy, formant):
     if backend=='wsola' and policy!='off':raise ValueError('Existing WSOLA does not preserve formants; no fallback')
     return backend
 
-def sha(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+def sha(path):
+    digest=hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for chunk in iter(lambda:stream.read(1024*1024),b''): digest.update(chunk)
+    return digest.hexdigest()
+
+def check_cancel(cancel):
+    if cancel is not None and cancel.is_set(): raise InterruptedError('SDK render cancelled')
 
 def render(source, destination, index, speed, pitch, policy='off', formant=0.,
            executable=None, cancel: threading.Event | None=None):
     backend=validate(index,speed,pitch,policy,formant)
+    check_cancel(cancel)
     exe=cli_path(executable);source=Path(source);destination=Path(destination)
     sidecar=destination.with_suffix(destination.suffix+'.json')
     if any(p.exists() or p.is_symlink() for p in (destination,sidecar)):raise FileExistsError('Never overwrite comparison audio or receipt')
+    source_hash=sha(source); executable_hash=sha(exe)
     metadata=sf.info(source)
     if metadata.channels not in (1,2) or metadata.frames==0:raise ValueError('Nonempty mono/stereo required')
     if metadata.frames/metadata.samplerate/speed>120:raise ValueError('Comparison output is limited to120 seconds; select a shorter source')
     if backend=='pv' and metadata.samplerate not in (44100,48000,88200,96000):raise ValueError('SDK PV supports44.1/48/88.2/96k; no implicit conversion')
+    if metadata.frames*metadata.channels>32_000_000: raise ValueError('Comparison input exceeds32 million scalar samples')
     audio,rate=sf.read(source,dtype='float32',always_2d=True)
+    if sha(source)!=source_hash: raise ValueError('Source changed during decoding; no comparison accepted')
+    check_cancel(cancel)
     if not np.isfinite(audio).all():raise ValueError('Nonfinite input')
     # Private conversion accepts FLAC/etc without modifying the source file.
     import tempfile
@@ -66,6 +78,7 @@ def render(source, destination, index, speed, pitch, policy='off', formant=0.,
                  '--formant-semitones',str(formant),'--block','64']
         if backend=='pv':command+=['--allow-experimental']
         env=os.environ.copy();env['LD_LIBRARY_PATH']=str(exe.parent)+os.pathsep+str(ROOT/'lib')+os.pathsep+env.get('LD_LIBRARY_PATH','')
+        check_cancel(cancel)
         with tempfile.TemporaryFile(mode='w+b') as log:
             process=subprocess.Popen(command,stdout=log,stderr=subprocess.STDOUT,env=env)
             start=time.monotonic()
@@ -80,14 +93,31 @@ def render(source, destination, index, speed, pitch, policy='off', formant=0.,
                 except subprocess.TimeoutExpired:process.kill();process.wait()
                 raise
             log.seek(0);output=log.read().decode('utf-8','replace')
+        check_cancel(cancel)
         if process.returncode:raise RuntimeError(output[-4000:])
-        result=sf.info(outgoing);y,_=sf.read(outgoing,always_2d=True)
+        result=sf.info(outgoing);y,_=sf.read(outgoing,dtype='float32',always_2d=True)
         expected=round(metadata.frames*float(np.float32(1/speed)))
         if result.samplerate!=rate or result.channels!=metadata.channels or abs(result.frames-expected)>1 or result.subtype!='FLOAT' or not np.isfinite(y).all():raise ValueError('SDK output failed format/duration/finiteness check')
-        # Exclusive write and retained receipt; raw PCM is not normalized.
-        with destination.open('xb') as stream:stream.write(outgoing.read_bytes())
-    receipt=dict(mode=SDK_MODES[index][0],speed=speed,pitch_semitones=pitch,policy=policy,formant_semitones=formant,
-                 input_sha256=sha(source),output_sha256=sha(destination),executable_sha256=sha(exe),
-                 output_frames=result.frames,rate=rate,channels=result.channels,peak=float(abs(y).max()),stdout=output)
-    with sidecar.open('x') as stream:stream.write(json.dumps(receipt,indent=2)+'\n')
+        if sha(source)!=source_hash or sha(exe)!=executable_hash:
+            raise ValueError('Source or executable changed during rendering; no comparison accepted')
+        receipt=dict(mode=SDK_MODES[index][0],speed=speed,pitch_semitones=pitch,policy=policy,formant_semitones=formant,
+                     input_sha256=source_hash,output_sha256=sha(outgoing),executable_sha256=executable_hash,
+                     output_frames=result.frames,rate=rate,channels=result.channels,peak=float(abs(y).max()),stdout=output)
+        encoded=json.dumps(receipt,indent=2,allow_nan=False)+'\n'
+        check_cancel(cancel)
+        # A successful result is a WAV/receipt pair. Roll back only files opened
+        # exclusively by this attempt, including a partially written receipt.
+        created=[]
+        try:
+            with destination.open('xb') as stream:
+                created.append(destination)
+                with outgoing.open('rb') as source_stream:
+                    while chunk:=source_stream.read(1024*1024):
+                        check_cancel(cancel);stream.write(chunk)
+            with sidecar.open('x',encoding='utf-8') as stream:
+                created.append(sidecar);stream.write(encoded)
+            check_cancel(cancel)
+        except BaseException:
+            for path in reversed(created): path.unlink(missing_ok=True)
+            raise
     return receipt
