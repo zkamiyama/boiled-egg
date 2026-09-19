@@ -1,0 +1,28 @@
+name: offline-pv
+on:
+  push:
+    paths: ['research/offline_pv/**', 'eval/offline_pv*', 'eval/test_offline_pv*', 'docs/benchmarks/OFFLINE_PV*', '.github/workflows/offline-pv.yml']
+  pull_request:
+    paths: ['research/offline_pv/**', 'eval/offline_pv*', 'eval/test_offline_pv*', 'docs/benchmarks/OFFLINE_PV*', '.github/workflows/offline-pv.yml']
+permissions:
+  contents: read
+jobs:
+  legacy-source:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dd04c9388443ff3358af34b85ca5a5c880f45e71
+          persist-credentials: false
+      - name: Archive exact historical control; not a test result
+        run: |
+          mkdir evidence
+          git rev-parse HEAD > evidence/COMMIT.txt
+          git rev-parse HEAD^{tree} > evidence/TREE.txt
+          git ls-files -z | xargs -0 sha256sum > evidence/SOURCE_SHA256SUMS
+          git archive --format=tar.gz HEAD > evidence/source.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: legacy-multires-source
+          path: evidence
+          if-no-files-found: error
