@@ -132,6 +132,7 @@ NEGATIVES = {
     "ragged_csv": "ragged CSV",
     "duplicate_json_key": "duplicate JSON key",
     "escape_path": "escapes root",
+    "malformed_artifacts": "invalid frozen model artifacts",
 }
 
 
@@ -188,6 +189,12 @@ def mutate(x: Fixture, name: str):
         path = x.root/"predictions.csv"
         path.write_text("item_id,prediction,status,status\na,3,ok,ok\n" if name == "duplicate_csv_column"
                         else "item_id,prediction,status\na,3\n")
+    elif name == "malformed_artifacts":
+        x.plan["artifacts"] = list(x.plan["artifacts"])
+        f.contract.json_write(x.root/"plan.json", x.plan)
+        x.plan_sha = f.contract.fingerprint(x.root/"plan.json")
+        x.receipt["plan_sha256"] = x.plan_sha
+        f.contract.json_write(x.root/"receipt.json", x.receipt)
     elif name == "duplicate_json_key":
         (x.root/"receipt.json").write_text('{"plan_sha256":"a","plan_sha256":"b"}')
 
