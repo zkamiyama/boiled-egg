@@ -1,0 +1,93 @@
+name: wsola-low-tone
+on:
+  push:
+    paths: ['eval/wsola*', 'eval/test_wsola*', 'docs/benchmarks/WSOLA_LOW_TONE*', '.github/workflows/wsola-low-tone.yml']
+  pull_request:
+    paths: ['eval/wsola*', 'eval/test_wsola*', 'docs/benchmarks/WSOLA_LOW_TONE*', '.github/workflows/wsola-low-tone.yml']
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  complete-screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      OPENBLAS_NUM_THREADS: 1
+      OMP_NUM_THREADS: 1
+      CTEST_PARALLEL_LEVEL: 2
+      PYTHONPATH: eval
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - name: Fixed dependencies and external evidence directory
+        run: |
+          python -m pip install numpy==2.3.5 scipy==1.17.0 soundfile==0.13.1
+          mkdir -p "$RUNNER_TEMP/wsola-low-tone"
+          echo "OUT=$RUNNER_TEMP/wsola-low-tone" >> "$GITHUB_ENV"
+          echo "BUILD=$RUNNER_TEMP/wsola-build" >> "$GITHUB_ENV"
+          python -m pip freeze > "$RUNNER_TEMP/wsola-low-tone/PYTHON_VERSIONS.txt"
+          g++ --version > "$RUNNER_TEMP/wsola-low-tone/COMPILER.txt"
+      - name: Fresh unchanged SDK including spectral controls
+        run: |
+          cmake -S . -B "$BUILD" -DCMAKE_BUILD_TYPE=Release -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON 2>&1 | tee "$OUT/config.log"
+          cmake --build "$BUILD" -j2 2>&1 | tee "$OUT/build.log"
+          python quality/audition/run_ctest.py --build "$BUILD" --expected 26 2>&1 | tee "$OUT/ctest.log"
+      - name: Exact48 unique executed tests and no skips
+        run: |
+          export BOILED_EGG_WSOLA_LIBRARY="$BUILD/libboiled_egg.so"
+          export BOILED_EGG_CLI_BACKEND="$BUILD/boiled_egg_backend_cli"
+          python - <<'PY' 2>&1 | tee "$OUT/tests.log"
+          import json, os, pathlib, unittest
+          suite=unittest.defaultTestLoader.loadTestsFromNames(['test_wsola_low_tone','test_offline_pv_assess','test_tsm_dataset','test_fixed_predictor','test_comparison_contract'])
+          def ids(s):
+              if isinstance(s,unittest.TestSuite): return [x for child in s for x in ids(child)]
+              return [s.id()]
+          names=ids(suite)
+          assert len(names)==len(set(names))==48, names
+          result=unittest.TextTestRunner(verbosity=2).run(suite)
+          passed=result.wasSuccessful() and result.testsRun==48 and not result.skipped
+          (pathlib.Path(os.environ['OUT'])/'tests.json').write_text(json.dumps(dict(expected=48,executed=result.testsRun,skipped=len(result.skipped),passed=passed,test_ids=names),indent=2))
+          raise SystemExit(0 if passed else 1)
+          PY
+      - name: Freeze complete grid and identities before rendering
+        run: python eval/wsola_low_tone_study.py prepare --library "$BUILD/libboiled_egg.so" --output "$OUT/plan" | tee "$OUT/PLAN_SHA256.txt"
+      - name: Complete480 cells times3; do not confuse known quality stops with missing execution
+        run: python -u eval/wsola_low_tone_study.py run --plan "$OUT/plan/plan.json" --plan-sha256 "$(cat "$OUT/PLAN_SHA256.txt")" --output "$OUT/results" 2>&1 | tee "$OUT/study.log"
+      - name: Verify every stored WAV and PCM identity
+        run: |
+          python - <<'PY'
+          import json,os,pathlib
+          import comparison_contract as c
+          import wsola_low_tone_study as s
+          root=pathlib.Path(os.environ['OUT'])/'results'
+          result=json.loads((root/'summary.json').read_text())
+          s.validate_grid(result['rows'])
+          assert result['execution_complete'] and result['repeat_pcm_identical'] and result['partition_pcm_identical']
+          assert result['quality_selection'] is None
+          for row in result['rows']:
+              wav=root/row['case']/'output.wav'
+              assert c.inspect_audio(wav)==row['audio']
+              assert s.pcm_hash(wav)==row['pcm_sha256']
+          (root/'stored-output-verification.json').write_text(json.dumps(dict(wav_verified=1440,pcm_verified=1440,quality_selection=None),indent=2))
+          PY
+      - name: Capture exact source and evidence, never source-tree build debris
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/wsola-low-tone"
+          OUT="$RUNNER_TEMP/wsola-low-tone"
+          git rev-parse HEAD > "$OUT/COMMIT.txt"
+          git rev-parse HEAD^{tree} > "$OUT/TREE.txt"
+          git ls-files -z | xargs -0 sha256sum > "$OUT/SOURCE_SHA256SUMS"
+          git archive --format=tar.gz HEAD > "$OUT/source.tar.gz"
+          if test -f "$RUNNER_TEMP/wsola-build/Testing/audition-complete.xml"; then cp "$RUNNER_TEMP/wsola-build/Testing/audition-complete.xml" "$OUT/ctest.xml"; fi
+          find "$OUT" -type f ! -name EVIDENCE_SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$OUT/EVIDENCE_SHA256SUMS"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wsola-low-tone-full
+          path: ${{ runner.temp }}/wsola-low-tone
+          if-no-files-found: error
