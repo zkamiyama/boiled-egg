@@ -200,6 +200,14 @@ def assess(rows):
     expected=set(itertools.product(FAMILIES,RATES,SHIFTS,ARMS,range(REPEATS)))
     keys=[row_key(r) for r in rows]
     if len(keys)!=len(set(keys)) or set(keys)!=expected:raise ValueError('incomplete/duplicate output grid')
+    allowed_rejections=set(itertools.product(('dense83',),RATES,(12,),('owned',),range(REPEATS)))
+    unexpected=any(r['status'] not in ('complete','rejected_uncovered') or
+                   (r['status']=='rejected_uncovered' and row_key(r) not in allowed_rejections) for r in rows)
+    if unexpected:
+        return dict(grid_complete=True,execution_complete=False,integrity_pass=False,
+                    repeats_identical=False,rendered=sum(r['status']=='complete' for r in rows),
+                    uncovered=sum(r['status']=='rejected_uncovered' for r in rows),
+                    profiles=None,quality_selection=None,decision='blocked_unexpected_execution_failure',real_time_qualified=False)
     grouped={}
     for r in rows:grouped.setdefault(row_key(r)[:-1],[]).append(r)
     repeat_equal=all(len({(r['status'],r.get('pcm_sha256'),tuple(r['errors'])) for r in rr})==1 for rr in grouped.values())
