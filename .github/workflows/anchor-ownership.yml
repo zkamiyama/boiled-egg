@@ -1,0 +1,128 @@
+name: anchor-ownership
+on:
+  push:
+    paths: ['research/anchor_wsola/**', 'eval/anchor_ownership.py', 'eval/test_anchor_ownership.py', 'docs/benchmarks/ANCHOR_OWNERSHIP*', '.github/workflows/anchor-ownership.yml']
+  pull_request:
+    paths: ['research/anchor_wsola/**', 'eval/anchor_ownership.py', 'eval/test_anchor_ownership.py', 'docs/benchmarks/ANCHOR_OWNERSHIP*', '.github/workflows/anchor-ownership.yml']
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  kernel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: gcc20, cc: gcc, cxx: g++, std: 20, sanitize: 'OFF'}
+          - {name: gcc23, cc: gcc, cxx: g++, std: 23, sanitize: 'OFF'}
+          - {name: clang20, cc: clang, cxx: clang++, std: 20, sanitize: 'OFF'}
+          - {name: clang23, cc: clang, cxx: clang++, std: 23, sanitize: 'OFF'}
+          - {name: asan, cc: clang, cxx: clang++, std: 20, sanitize: 'ON'}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Build isolated research kernel
+        env: {CC: '${{ matrix.cc }}', CXX: '${{ matrix.cxx }}'}
+        run: |
+          cmake -S research/anchor_wsola -B "$RUNNER_TEMP/kernel" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=${{ matrix.std }} -DANCHOR_SANITIZE=${{ matrix.sanitize }}
+          cmake --build "$RUNNER_TEMP/kernel" -j2
+      - name: Seven enabled and actually executed CTests
+        env: {ASAN_OPTIONS: 'detect_leaks=1', UBSAN_OPTIONS: 'halt_on_error=1'}
+        run: python quality/audition/run_ctest.py --build "$RUNNER_TEMP/kernel" --expected 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: anchor-kernel-${{ matrix.name }}
+          path: ${{ runner.temp }}/kernel/Testing
+          if-no-files-found: error
+  complete-screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: eval
+      OPENBLAS_NUM_THREADS: 1
+      OMP_NUM_THREADS: 1
+      CTEST_PARALLEL_LEVEL: 2
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - name: Numerical environment and external build paths
+        run: |
+          python -m pip install numpy==2.3.5 scipy==1.17.0 soundfile==0.13.1
+          mkdir -p "$RUNNER_TEMP/anchor-evidence"
+          echo "OUT=$RUNNER_TEMP/anchor-evidence" >> "$GITHUB_ENV"
+          echo "BE_ANCHOR_LIBRARY=$RUNNER_TEMP/anchor-kernel/libanchor_wsola.so" >> "$GITHUB_ENV"
+          python -m pip freeze > "$RUNNER_TEMP/anchor-evidence/PYTHON_VERSIONS.txt"
+          g++ --version > "$RUNNER_TEMP/anchor-evidence/COMPILER.txt"
+      - name: Fresh unchanged SDK and isolated candidate
+        run: |
+          cmake -S . -B "$RUNNER_TEMP/sdk" -DCMAKE_BUILD_TYPE=Release -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON
+          cmake --build "$RUNNER_TEMP/sdk" -j2
+          python quality/audition/run_ctest.py --build "$RUNNER_TEMP/sdk" --expected 26 | tee "$OUT/sdk-ctest.log"
+          cp "$RUNNER_TEMP/sdk/Testing/audition-complete.xml" "$OUT/sdk-ctest.xml"
+          cmake -S research/anchor_wsola -B "$RUNNER_TEMP/anchor-kernel" -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/anchor-kernel" -j2
+          python quality/audition/run_ctest.py --build "$RUNNER_TEMP/anchor-kernel" --expected 7 | tee "$OUT/kernel-ctest.log"
+          cp "$RUNNER_TEMP/anchor-kernel/Testing/audition-complete.xml" "$OUT/kernel-ctest.xml"
+      - name: Exact55 unique Python tests, missing assets are errors not skips
+        run: |
+          python - <<'PY' 2>&1 | tee "$OUT/python-tests.log"
+          import json,os,pathlib,unittest
+          suite=unittest.defaultTestLoader.loadTestsFromNames(['test_anchor_ownership','test_wsola_low_tone.Calibration','test_offline_pv_assess','test_tsm_dataset','test_fixed_predictor','test_comparison_contract'])
+          def ids(s):
+              return [i for child in s for i in ids(child)] if isinstance(s,unittest.TestSuite) else [s.id()]
+          names=ids(suite)
+          assert len(names)==len(set(names))==55,names
+          result=unittest.TextTestRunner(verbosity=2).run(suite)
+          ok=result.wasSuccessful() and result.testsRun==55 and not result.skipped
+          (pathlib.Path(os.environ['OUT'])/'python-tests.json').write_text(json.dumps(dict(expected=55,executed=result.testsRun,skipped=len(result.skipped),passed=ok,ids=names),indent=2))
+          raise SystemExit(0 if ok else 1)
+          PY
+      - name: Freeze full grid and hashes before measurement
+        run: python eval/anchor_ownership.py prepare --native "$BE_ANCHOR_LIBRARY" --sdk "$RUNNER_TEMP/sdk/libboiled_egg.so" --output "$OUT/plan" | tee "$OUT/PLAN_SHA256.txt"
+      - name: Run all1080 attempts, preserving known coverage rejection
+        run: python -u eval/anchor_ownership.py run --plan "$OUT/plan/plan.json" --plan-sha256 "$(cat "$OUT/PLAN_SHA256.txt")" --output "$OUT/results" 2>&1 | tee "$OUT/study.log"
+      - name: Verify actual output hashes and retain rejection in the denominator
+        run: |
+          python - <<'PY'
+          import hashlib,json,os,pathlib
+          import soundfile as sf
+          import anchor_ownership as a
+          root=pathlib.Path(os.environ['OUT'])/'results'
+          report=json.loads((root/'summary.json').read_text())
+          result=a.assess(report['rows'])
+          assert result['integrity_pass'] and result['repeats_identical']
+          assert result['rendered']==1074 and result['uncovered']==6
+          assert not result['execution_complete'] and result['quality_selection'] is None
+          count=0
+          for row in report['rows']:
+              if row['status']!='complete':continue
+              path=root/row['output']
+              assert hashlib.sha256(path.read_bytes()).hexdigest()==row['wav_sha256']
+              pcm,rate=sf.read(path,dtype='float32')
+              assert len(pcm)==rate==row['rate'] and a.pcm_hash(pcm)==row['pcm_sha256']
+              count+=1
+          (root/'output-verification.json').write_text(json.dumps(dict(attempts=1080,verified_audio=count,known_refusals=6,quality_selection=None),indent=2))
+          PY
+      - name: Preserve source and evidence even on failure
+        if: always()
+        run: |
+          OUT="$RUNNER_TEMP/anchor-evidence"
+          mkdir -p "$OUT"
+          git rev-parse HEAD > "$OUT/COMMIT.txt"
+          git rev-parse HEAD^{tree} > "$OUT/TREE.txt"
+          git ls-files -z | xargs -0 sha256sum > "$OUT/SOURCE_SHA256SUMS"
+          git archive --format=tar.gz HEAD > "$OUT/source.tar.gz"
+          find "$OUT" -type f ! -name EVIDENCE_SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$OUT/EVIDENCE_SHA256SUMS"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: anchor-ownership-full
+          path: ${{ runner.temp }}/anchor-evidence
+          if-no-files-found: error
