@@ -1,0 +1,136 @@
+name: pvdr-phase-reference
+on:
+  push:
+    paths: ['research/pvdr_phase/**', 'eval/*pvdr_phase*', 'docs/benchmarks/PVDR_PHASE*', '.github/workflows/pvdr-phase-reference.yml', 'research/nsdgt/**', 'src/experimental/pv/fft.*']
+  pull_request:
+    paths: ['research/pvdr_phase/**', 'eval/*pvdr_phase*', 'docs/benchmarks/PVDR_PHASE*', '.github/workflows/pvdr-phase-reference.yml', 'research/nsdgt/**', 'src/experimental/pv/fft.*']
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  phase-controls:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: gcc20, cc: gcc, cxx: g++, std: 20, sanitizer: none}
+          - {name: gcc23, cc: gcc, cxx: g++, std: 23, sanitizer: none}
+          - {name: clang20, cc: clang, cxx: clang++, std: 20, sanitizer: none}
+          - {name: clang23, cc: clang, cxx: clang++, std: 23, sanitizer: none}
+          - {name: asan, cc: clang, cxx: clang++, std: 20, sanitizer: address}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Isolated coefficient kernel
+        env: {CC: '${{ matrix.cc }}', CXX: '${{ matrix.cxx }}'}
+        run: |
+          cmake -S research/pvdr_phase -B "$RUNNER_TEMP/phase" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=${{ matrix.std }} -DPG_SANITIZER=${{ matrix.sanitizer }}
+          cmake --build "$RUNNER_TEMP/phase" -j2
+      - name: Exactly11 enabled and executed native and C11 tests
+        env: {ASAN_OPTIONS: 'detect_leaks=1', UBSAN_OPTIONS: 'halt_on_error=1'}
+        run: python quality/audition/run_ctest.py --build "$RUNNER_TEMP/phase" --expected 11
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: phase-controls-${{ matrix.name }}
+          path: ${{ runner.temp }}/phase/Testing
+          if-no-files-found: error
+  complete-reference:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: eval
+      OPENBLAS_NUM_THREADS: 1
+      OMP_NUM_THREADS: 1
+      CTEST_PARALLEL_LEVEL: 2
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - name: Fixed numerical dependencies and external work directories
+        run: |
+          python -m pip install numpy==2.3.5 scipy==1.17.0 soundfile==0.13.1
+          mkdir -p "$RUNNER_TEMP/phase-evidence"
+          echo "OUT=$RUNNER_TEMP/phase-evidence" >> "$GITHUB_ENV"
+          echo "BE_PHASE_LIBRARY=$RUNNER_TEMP/phase/libpvdr_phase.so" >> "$GITHUB_ENV"
+          echo "BE_NSG_LIBRARY=$RUNNER_TEMP/nsg/libnsdgt.so" >> "$GITHUB_ENV"
+          python -m pip freeze > "$RUNNER_TEMP/phase-evidence/PYTHON_VERSIONS.txt"
+          g++ --version > "$RUNNER_TEMP/phase-evidence/COMPILER.txt"
+      - name: Build unchanged SDK and NSDGT plus isolated phase kernel
+        run: |
+          cmake -S . -B "$RUNNER_TEMP/sdk" -DCMAKE_BUILD_TYPE=Release -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON
+          cmake --build "$RUNNER_TEMP/sdk" -j2
+          python quality/audition/run_ctest.py --build "$RUNNER_TEMP/sdk" --expected 26 | tee "$OUT/sdk-tests.log"
+          cp "$RUNNER_TEMP/sdk/Testing/audition-complete.xml" "$OUT/sdk-tests.xml"
+          cmake -S research/nsdgt -B "$RUNNER_TEMP/nsg" -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/nsg" -j2
+          python quality/audition/run_ctest.py --build "$RUNNER_TEMP/nsg" --expected 12 | tee "$OUT/nsdgt-tests.log"
+          cp "$RUNNER_TEMP/nsg/Testing/audition-complete.xml" "$OUT/nsdgt-tests.xml"
+          cmake -S research/pvdr_phase -B "$RUNNER_TEMP/phase" -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/phase" -j2
+          python quality/audition/run_ctest.py --build "$RUNNER_TEMP/phase" --expected 11 | tee "$OUT/phase-tests.log"
+          cp "$RUNNER_TEMP/phase/Testing/audition-complete.xml" "$OUT/phase-tests.xml"
+      - name: Exactly66 unique Python tests, zero skips
+        run: |
+          export PG_EVIDENCE="$OUT/phase-controls" NSG_EVIDENCE="$OUT/nsdgt-controls"
+          python - <<'PY' 2>&1 | tee "$OUT/python-tests.log"
+          import json,os,pathlib,unittest
+          suite=unittest.defaultTestLoader.loadTestsFromNames(['test_pvdr_phase_reference','test_nsdgt_foundation','test_wsola_low_tone.Calibration','test_offline_pv_assess','test_tsm_dataset','test_fixed_predictor','test_comparison_contract'])
+          def ids(s):
+              return [i for child in s for i in ids(child)] if isinstance(s,unittest.TestSuite) else [s.id()]
+          names=ids(suite)
+          assert len(names)==len(set(names))==66,names
+          result=unittest.TextTestRunner(verbosity=2).run(suite)
+          ok=result.wasSuccessful() and result.testsRun==66 and not result.skipped
+          (pathlib.Path(os.environ['OUT'])/'python-tests.json').write_text(json.dumps(dict(expected=66,executed=result.testsRun,skipped=len(result.skipped),passed=ok,ids=names),indent=2))
+          raise SystemExit(0 if ok else 1)
+          PY
+      - name: Freeze full reference grid and identities before measurement
+        run: python eval/pvdr_phase_reference.py prepare --phase "$BE_PHASE_LIBRARY" --nsdgt "$BE_NSG_LIBRARY" --output "$OUT/plan" | tee "$OUT/PLAN_SHA256.txt"
+      - name: All96 cells times3 without tuning to quality results
+        run: python -u eval/pvdr_phase_reference.py run --plan "$OUT/plan/plan.json" --sha256 "$(cat "$OUT/PLAN_SHA256.txt")" --output "$OUT/results" 2>&1 | tee "$OUT/grid.log"
+      - name: Read every stored complex output and predecessor trace
+        run: |
+          python - <<'PY'
+          import hashlib,json,os,pathlib,zlib,numpy as np
+          import pvdr_phase_reference as p
+          root=pathlib.Path(os.environ['OUT'])/'results'
+          report=json.loads((root/'summary.json').read_text())
+          result=p.assess(report['rows'])
+          assert result['complete'] and result['integrity_pass'] and result['repeats_identical']
+          assert len(report['rows'])==288 and result['quality_selection'] is None
+          for row in report['rows']:
+              raw=(root/row['output']).read_bytes()
+              assert hashlib.sha256(raw).hexdigest()==row['pcm_sha256']
+              y=np.frombuffer(raw,dtype='<c8')
+              assert len(y)==p.RATE*row['alpha'] and np.isfinite(y).all() and np.any(y)
+              raw_trace=zlib.decompress((root/row['trace']).read_bytes())
+              assert hashlib.sha256(raw_trace).hexdigest()==row['trace_sha256']
+              trace=np.frombuffer(raw_trace,dtype='<i4').reshape(row['frames'],row['fft']//2+1)
+              assert np.all(trace[0]==-3) and np.all(trace[1:]>=-2) and np.all(trace<row['fft']//2+1)
+              assert int(np.sum(trace==-1))==row['native']['temporal_edges']
+              assert int(np.sum(trace>=0))==row['native']['frequency_edges']
+              assert int(np.sum(trace==-2))==row['native']['low_bins']
+          (root/'output-verification.json').write_text(json.dumps(dict(pcm_verified=288,traces_verified=288,quality_selection=None,identity_quality_not_required_for_reference=True),indent=2))
+          PY
+      - name: Capture exact source and evidence on success or failure
+        if: always()
+        run: |
+          OUT="$RUNNER_TEMP/phase-evidence"
+          mkdir -p "$OUT"
+          git rev-parse HEAD > "$OUT/COMMIT.txt"
+          git rev-parse HEAD^{tree} > "$OUT/TREE.txt"
+          git ls-files -z | xargs -0 sha256sum > "$OUT/SOURCE_SHA256SUMS"
+          git archive --format=tar.gz HEAD > "$OUT/source.tar.gz"
+          find "$OUT" -type f ! -name EVIDENCE_SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$OUT/EVIDENCE_SHA256SUMS"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pvdr-phase-reference-full
+          path: ${{ runner.temp }}/phase-evidence
+          if-no-files-found: error
