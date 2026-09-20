@@ -1,0 +1,122 @@
+name: nsdgt-foundation
+on:
+  push:
+    paths: ['research/nsdgt/**', 'eval/*nsdgt*', 'docs/benchmarks/NSDGT_FOUNDATION*', 'src/experimental/pv/fft.*', '.github/workflows/nsdgt-foundation.yml']
+  pull_request:
+    paths: ['research/nsdgt/**', 'eval/*nsdgt*', 'docs/benchmarks/NSDGT_FOUNDATION*', 'src/experimental/pv/fft.*', '.github/workflows/nsdgt-foundation.yml']
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  numerical-kernel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: gcc20, cc: gcc, cxx: g++, std: 20, sanitizer: none}
+          - {name: gcc23, cc: gcc, cxx: g++, std: 23, sanitizer: none}
+          - {name: clang20, cc: clang, cxx: clang++, std: 20, sanitizer: none}
+          - {name: clang23, cc: clang, cxx: clang++, std: 23, sanitizer: none}
+          - {name: asan, cc: clang, cxx: clang++, std: 20, sanitizer: address}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Build isolated transform, unchanged product FFT
+        env: {CC: '${{ matrix.cc }}', CXX: '${{ matrix.cxx }}'}
+        run: |
+          cmake -S research/nsdgt -B "$RUNNER_TEMP/nsg" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=${{ matrix.std }} -DNSG_SANITIZER=${{ matrix.sanitizer }}
+          cmake --build "$RUNNER_TEMP/nsg" -j2
+      - name: Exactly12 enabled and executed CTests
+        env: {ASAN_OPTIONS: 'detect_leaks=1', UBSAN_OPTIONS: 'halt_on_error=1'}
+        run: python quality/audition/run_ctest.py --build "$RUNNER_TEMP/nsg" --expected 12
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nsdgt-${{ matrix.name }}
+          path: ${{ runner.temp }}/nsg/Testing
+          if-no-files-found: error
+  complete-grid:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: eval
+      OPENBLAS_NUM_THREADS: 1
+      OMP_NUM_THREADS: 1
+      CTEST_PARALLEL_LEVEL: 2
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - name: Fixed environment and external work directories
+        run: |
+          python -m pip install numpy==2.3.5 scipy==1.17.0 soundfile==0.13.1
+          mkdir -p "$RUNNER_TEMP/nsg-evidence"
+          echo "OUT=$RUNNER_TEMP/nsg-evidence" >> "$GITHUB_ENV"
+          echo "BE_NSG_LIBRARY=$RUNNER_TEMP/nsg/libnsdgt.so" >> "$GITHUB_ENV"
+          python -m pip freeze > "$RUNNER_TEMP/nsg-evidence/PYTHON_VERSIONS.txt"
+          g++ --version > "$RUNNER_TEMP/nsg-evidence/COMPILER.txt"
+      - name: Fresh unchanged SDK and numerical research kernel
+        run: |
+          cmake -S . -B "$RUNNER_TEMP/sdk" -DCMAKE_BUILD_TYPE=Release -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON
+          cmake --build "$RUNNER_TEMP/sdk" -j2
+          python quality/audition/run_ctest.py --build "$RUNNER_TEMP/sdk" --expected 26 | tee "$OUT/sdk-tests.log"
+          cp "$RUNNER_TEMP/sdk/Testing/audition-complete.xml" "$OUT/sdk-tests.xml"
+          cmake -S research/nsdgt -B "$RUNNER_TEMP/nsg" -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/nsg" -j2
+          python quality/audition/run_ctest.py --build "$RUNNER_TEMP/nsg" --expected 12 | tee "$OUT/kernel-tests.log"
+          cp "$RUNNER_TEMP/nsg/Testing/audition-complete.xml" "$OUT/kernel-tests.xml"
+      - name: Exactly55 unique Python tests, zero skips
+        run: |
+          export NSG_EVIDENCE="$OUT/controls"
+          python - <<'PY' 2>&1 | tee "$OUT/python-tests.log"
+          import json,os,pathlib,unittest
+          suite=unittest.defaultTestLoader.loadTestsFromNames(['test_nsdgt_foundation','test_wsola_low_tone.Calibration','test_offline_pv_assess','test_tsm_dataset','test_fixed_predictor','test_comparison_contract'])
+          def ids(s):
+              return [i for child in s for i in ids(child)] if isinstance(s,unittest.TestSuite) else [s.id()]
+          names=ids(suite)
+          assert len(names)==len(set(names))==55,names
+          result=unittest.TextTestRunner(verbosity=2).run(suite)
+          ok=result.wasSuccessful() and result.testsRun==55 and not result.skipped
+          (pathlib.Path(os.environ['OUT'])/'python-tests.json').write_text(json.dumps(dict(expected=55,executed=result.testsRun,skipped=len(result.skipped),passed=ok,ids=names),indent=2))
+          raise SystemExit(0 if ok else 1)
+          PY
+      - name: Freeze exact288-cell grid and source/binary/input hashes
+        run: python eval/nsdgt_foundation.py prepare --library "$BE_NSG_LIBRARY" --output "$OUT/plan" | tee "$OUT/PLAN_SHA256.txt"
+      - name: All864 analysis-synthesis pairs against independent references
+        run: python -u eval/nsdgt_foundation.py run --plan "$OUT/plan/plan.json" --sha256 "$(cat "$OUT/PLAN_SHA256.txt")" --output "$OUT/results" 2>&1 | tee "$OUT/grid.log"
+      - name: Read back every complex output and reject zero false positives
+        run: |
+          python - <<'PY'
+          import hashlib,json,os,pathlib,numpy as np
+          import nsdgt_foundation as n
+          root=pathlib.Path(os.environ['OUT']);result=json.loads((root/'results/summary.json').read_text());plan=json.loads((root/'plan/plan.json').read_text())
+          assert n.assess(result['rows'])['passed'] and result['complete_pairs']==864
+          for row in result['rows']:
+              raw=(root/'results'/row['output']).read_bytes()
+              assert hashlib.sha256(raw).hexdigest()==row['output_sha256']
+              y=np.frombuffer(raw,dtype='<c8');case=plan['cases'][row['index']]
+              assert len(y)==case['n'] and np.isfinite(y).all()
+              assert np.any(y!=0) if case['signal']!='zero' else np.all(y==0)
+          (root/'output-verification.json').write_text(json.dumps(dict(verified_pairs=864,quality_selection=None),indent=2))
+          PY
+      - name: Capture source and evidence; no build outputs in source tree
+        if: always()
+        run: |
+          OUT="$RUNNER_TEMP/nsg-evidence"
+          mkdir -p "$OUT"
+          git rev-parse HEAD > "$OUT/COMMIT.txt"
+          git rev-parse HEAD^{tree} > "$OUT/TREE.txt"
+          git ls-files -z | xargs -0 sha256sum > "$OUT/SOURCE_SHA256SUMS"
+          git archive --format=tar.gz HEAD > "$OUT/source.tar.gz"
+          find "$OUT" -type f ! -name EVIDENCE_SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$OUT/EVIDENCE_SHA256SUMS"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nsdgt-foundation-full
+          path: ${{ runner.temp }}/nsg-evidence
+          if-no-files-found: error
