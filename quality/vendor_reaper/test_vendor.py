@@ -58,6 +58,14 @@ class Calibration(unittest.TestCase):
   with tempfile.TemporaryDirectory() as d:
    p=Path(d)/'receipt.json';p.write_text(json.dumps({'status':'complete','id':'x','plan_sha256':'other'}))
    with self.assertRaises(ValueError):h.verify({'receipt':str(p),'id':'x'},'correct')
+ def test_failed_host_with_existing_output_is_not_success(self):
+  good={'returncode':0,'batch':{'attempts':270,'completed':270}}
+  h.require_process(good,270)
+  for bad in ({'returncode':1,'batch':good['batch']}, {'returncode':0},
+              {'returncode':0,'batch':{'attempts':270,'completed':269}},
+              {'returncode':False,'batch':good['batch']},
+              {'returncode':0,'batch':{'attempts':270.,'completed':270}}):
+   with self.subTest(receipt=bad),self.assertRaises(ValueError):h.require_process(bad,270)
  def test_pcm16_output_rejected(self):
   with tempfile.TemporaryDirectory() as d:
    p=Path(d)/'x.wav';sf.write(p,np.ones(100)*.1,48000,subtype='PCM_16');info=h.c.inspect_audio(p)
