@@ -54,8 +54,26 @@ def render(reaper,profile,jobs,out,plan_sha,display=':97',timeout=1200):
             import signal
             os.killpg(p.pid,signal.SIGTERM);p.wait(timeout=10);rc=-999
     report=dict(argv=argv,returncode=rc,wall_seconds=time.perf_counter()-start,proprietary_runtime_ci=False)
+    try:
+        report['batch']=json.loads((out/'done.json').read_text())
+    except (OSError,ValueError) as exc:
+        report['batch']=None;report['batch_error']=str(exc)
     c.json_write(out/'process.json',report)
     return report
+
+def require_process(report,expected):
+    """A valid WAV cannot excuse a crashed or incomplete host process."""
+    try:
+        if type(report['returncode']) is not int or report['returncode']!=0:
+            raise ValueError('REAPER process failed')
+        batch=report['batch']
+        if type(batch['attempts']) is not int or type(batch['completed']) is not int:
+            raise ValueError('malformed batch counters')
+        if batch['attempts']!=expected or batch['completed']!=expected:
+            raise ValueError('incomplete REAPER batch')
+    except (KeyError,TypeError) as exc:
+        raise ValueError('missing REAPER process evidence') from exc
+
 
 def verify(job,plan_sha):
     r=json.loads(Path(job['receipt']).read_text())
