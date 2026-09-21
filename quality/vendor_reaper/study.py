@@ -163,12 +163,16 @@ def run(planpath,sha,profile,out):
             jobs.append(item['job'])
         requests.append(item)
     c.json_write(out/'request-grid.json',[v['row'] for v in requests])
-    host.render(Path(plan['reaper']),profile,jobs,out/'reaper-host',sha)
+    process=host.render(Path(plan['reaper']),profile,jobs,out/'reaper-host',sha)
+    host_error=None
+    try:host.require_process(process,len(jobs))
+    except ValueError as exc:host_error=str(exc)
     rows=[]
     for item in requests:
         row=item['row'];meta=item['source']['meta'];output=item['output'];engine=row['engine']
         try:
             if engine in host.PROFILES:
+                if host_error:raise ValueError(host_error)
                 receipt,info=host.verify(item['job'],sha);row['host_receipt_sha256']=c.fingerprint(Path(item['job']['receipt']));row['render_seconds']=receipt['render_seconds']
             else:
                 backend,quality,formant=SDK[engine]
