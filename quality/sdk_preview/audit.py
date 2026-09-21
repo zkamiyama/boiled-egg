@@ -55,6 +55,46 @@ def source_contract(main: Path, donor: Path, current: Path, host_reference: Path
                 protected_files=len(protected), runtime_files=len(runtime))
 
 
+
+def packaging_source_contract(main: Path, donor: Path, current: Path,
+                              reference: Path, host_reference: Path | None = None) -> dict:
+    """Exact, separately pinned post-C1 maintenance scope; no generic exclusions.
+
+    The reference must still contain the validated donor runtime. Only the exact
+    Windows static export-macro addition is allowed in the candidate's runtime.
+    The original extraction-only source_contract is intentionally unchanged.
+    """
+    runtime = {**directory(donor, 'src'), **directory(donor, 'include')}
+    if not runtime or runtime != {**directory(reference, 'src'), **directory(reference, 'include')}:
+        raise ValueError('package reference differs from validated donor runtime')
+    protected = {}
+    for prefix in ('adapters', 'eval', 'research'):
+        expected_files = directory(reference, prefix)
+        if not expected_files or expected_files != directory(current, prefix):
+            raise ValueError(f'protected package {prefix} tree changed')
+        protected.update(expected_files)
+    if host_reference is not None and directory(reference, 'adapters') != directory(host_reference, 'adapters'):
+        raise ValueError('package reference differs from reviewed host snapshot')
+    for name in ('include/boiled_egg/boiled_egg.h', 'src/engine.cpp', 'src/engine.hpp', 'src/profile.cpp'):
+        if sha(main / name) != sha(reference / name):
+            raise ValueError(f'legacy package reference changed: {name}')
+    header = 'include/boiled_egg/boiled_egg.h'
+    original = (reference / header).read_bytes()
+    before = b'#if defined(_WIN32)\n  #if defined(BOILED_EGG_BUILDING_LIBRARY)'
+    after = (b'#if defined(_WIN32)\n  #if defined(BOILED_EGG_STATIC)\n'
+             b'    #define BOILEDEGG_API\n  #elif defined(BOILED_EGG_BUILDING_LIBRARY)')
+    if original.count(before) != 1:
+        raise ValueError('unknown reference export macro')
+    expected_runtime = dict(runtime)
+    expected_runtime[header] = hashlib.sha256(original.replace(before, after, 1)).hexdigest()
+    if expected_runtime != {**directory(current, 'src'), **directory(current, 'include')}:
+        raise ValueError('package runtime differs beyond exact static export macro')
+    protected.update(expected_runtime)
+    return dict(protected_sha256=protected, donor_runtime_sha256=runtime,
+                protected_files=len(protected), runtime_files=len(runtime),
+                source_profile='pinned-package-static-export-v1',
+                allowed_runtime_change={header: dict(before=runtime[header], after=expected_runtime[header])})
+
 def expected(kind: str) -> set[tuple]:
     if kind == 'c':
         return set(itertools.product(RATES, (1, 2), (0, 1, 2), (0, 1), (0, 1, 2), (32, 257)))
@@ -133,7 +173,14 @@ def run(args) -> dict:
     host_reference = getattr(args, 'host_reference_source', None)
     if host_reference is not None:
         host_reference = host_reference.resolve(strict=True)
-    scope = source_contract(base, donor, current, host_reference)
+    package_reference = getattr(args, 'package_reference_source', None)
+    if package_reference is not None:
+        package_reference = package_reference.resolve(strict=True)
+    def checked_scope():
+        if package_reference is not None:
+            return packaging_source_contract(base, donor, current, package_reference, host_reference)
+        return source_contract(base, donor, current, host_reference)
+    scope = checked_scope()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     # An interrupted/failed run retains evidence, but cannot publish summary.json.
     args.output.mkdir()
@@ -153,7 +200,7 @@ def run(args) -> dict:
         if key[-1] == 32 and values != records[(*key[:-1], 257)]:
             raise ValueError('legacy block partition changed')
     preview_count = compare(args.donor_replay, args.candidate_replay, 'preview')
-    if scope != source_contract(base, donor, current, host_reference):
+    if scope != checked_scope():
         raise ValueError('sources changed during run')
     for name, digest in files.items():
         if sha(Path(name)) != digest:
@@ -175,4 +222,5 @@ if __name__ == '__main__':
                  'on-library', 'c-client', 'cpp-client', 'donor-replay', 'candidate-replay', 'output'):
         p.add_argument('--'+name, type=Path, required=True)
     p.add_argument('--host-reference-source', type=Path, help='Explicit reviewed C2 adapter snapshot; default retains C1 main-adapter equality')
+    p.add_argument('--package-reference-source', type=Path, help='Explicit pinned post-C1 source; permits only the exact static export macro change')
     r = run(p.parse_args()); print(json.dumps({k:r[k] for k in ('legacy_pairs', 'preview_pairs', 'runtime_files', 'protected_files')}))

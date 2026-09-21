@@ -15,10 +15,11 @@ suppresses import/export decoration for static builds, and CMake exports the
 symbol for static clients and still emits the import reference for shared clients.
 This local cross-target assembly check alone is not a native Windows link/run test.
 
-Only CMakeLists.txt and the export-macro section of the public header are modified.
+Production changes are limited to CMakeLists.txt and the public export macro.
+The legacy audit and its workflow are also maintained, as described below.
 All functions, structs, enums, IDs, ABI/state, DSP implementation, presets,
 latency/tail, plugins, GUI and transport retain their original contents/semantics.
-There are326 entirely unchanged old files and8 additions (336 total). The public
+There are324 entirely unchanged old files and9 additions (337 total). The public
 header changes preprocessing/link decoration, not the C binary calling contract.
 Source snapshots and exact tree comparisons verify that no rejected research patch
 was accidentally applied.
@@ -119,3 +120,26 @@ offline-clip contracts. Project licensing is not assigned by this change. The
 read-only evidence bundle includes source hashes, patches, actual local binaries,
 logs, negative controls and downloaded CI receipts; no old quality-grid execution
 is counted as a new result.
+
+
+## Historical audit failure and exact maintenance reference
+
+The initial PR checkpoint's sdk-preview-integration35561985710 was NOT all green:
+its gcc20 job106216467318 completed SDK tests and installs but stopped before old
+client execution with `protected eval tree changed`. The extraction-only C1 audit
+still compared eval/research to the pre-C1 snapshot, even though main already
+contained separately accepted additions. Its original contract remains unchanged.
+The failed artifact10622551868 and logs are retained; later packaging CI success
+is not a waiver of this failure.
+
+A separately named maintenance profile now uses accepted main2a65a0da as an
+immutable additional reference. Its src/include must first match the original
+validated donor exactly; its legacy core files must still match the old baseline;
+its adapters must match the reviewed host. Current adapters/eval/research must
+match that reference exactly. Candidate src/include may differ ONLY by the exact
+Windows static export-macro insertion in one header. Function declarations, other
+headers, DSP edits, missing/extra files, mismatched references and unknown macros
+still fail. Four new negative/control tests preserve the original extraction
+behavior and reject these changes. No comparison client, export, PCM, state or
+preview hash gate is removed. The same old executables still run against the
+original/OFF/ON libraries. Final execution results are recorded in PR57.

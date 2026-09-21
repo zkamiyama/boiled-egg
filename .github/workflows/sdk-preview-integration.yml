@@ -67,6 +67,16 @@ jobs:
           ref: c85a367c9ba47b9cbff0233a916530853c6ec61e
           path: .host-reference
           persist-credentials: false
+      - uses: actions/checkout@v4
+        if: matrix.compiler == 'gcc' && matrix.standard == 20
+        with:
+          repository: zkamiyama/boiled-egg
+          # Accepted post-C1 evaluation/research additions, never a moving branch.
+          # Runtime must still equal the original donor; only exact static export
+          # decoration may differ in the candidate. Original clients are unchanged.
+          ref: 2a65a0da25ac4a3d9cfa920d90524a16fbb4319b
+          path: .package-reference
+          persist-credentials: false
       - name: Execute unchanged old clients with three different SDK libraries
         if: matrix.compiler == 'gcc' && matrix.standard == 20
         run: |
@@ -85,6 +95,7 @@ jobs:
             -Lbuild-previous -Wl,-rpath,"$PWD/build-previous" -lboiled_egg -o validation/legacy-cpp
           python quality/sdk_preview/audit.py \
             --baseline-source .previous --donor-source .donor --source . --host-reference-source .host-reference \
+            --package-reference-source .package-reference \
             --original-library build-previous/libboiled_egg.so \
             --off-library build-off/libboiled_egg.so --on-library build-on/libboiled_egg.so \
             --c-client validation/legacy-c --cpp-client validation/legacy-cpp \
