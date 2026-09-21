@@ -1,0 +1,77 @@
+name: sdk-installation
+on:
+  push:
+    paths: ['CMakeLists.txt', 'cmake/**', 'include/**', 'src/**', 'tests/backend_install/**', 'tests/install_relocated/**', 'scripts/check_sdk_install.py', 'scripts/test_check_sdk_install.py', 'quality/audition/run_ctest.py', 'quality/sdk_preview/**', 'docs/SDK_INSTALLATION.md', 'docs/benchmarks/SDK_INSTALLATION_E1*', '.github/workflows/sdk-installation.yml']
+  pull_request:
+    paths: ['CMakeLists.txt', 'cmake/**', 'include/**', 'src/**', 'tests/backend_install/**', 'tests/install_relocated/**', 'scripts/check_sdk_install.py', 'scripts/test_check_sdk_install.py', 'quality/audition/run_ctest.py', 'quality/sdk_preview/**', 'docs/SDK_INSTALLATION.md', 'docs/benchmarks/SDK_INSTALLATION_E1*', '.github/workflows/sdk-installation.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  installed-consumers:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022, macos-14]
+        linkage: [shared, static]
+        spectral: ['ON', 'OFF']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - name: Build only the existing SDK, not research algorithms or GUI
+        run: |
+          shared=OFF
+          if [[ '${{ matrix.linkage }}' == shared ]]; then shared=ON; fi
+          cmake -S . -B build-package -DCMAKE_BUILD_TYPE=Release \
+            -DBOILED_EGG_BUILD_SHARED="$shared" \
+            -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=${{ matrix.spectral }} \
+            -DBOILED_EGG_BUILD_TESTS=OFF -DBOILED_EGG_BUILD_TOOLS=OFF -DBOILED_EGG_BUILD_BENCH=OFF
+          cmake --build build-package --config Release --parallel 2
+      - name: Exact eight portable gate controls
+        run: |
+          python - <<'PY'
+          import sys, unittest
+          sys.path.insert(0, 'scripts')
+          suite = unittest.defaultTestLoader.loadTestsFromName('test_check_sdk_install')
+          assert suite.countTestCases() == 8
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          assert result.testsRun == 8 and not result.skipped and result.wasSuccessful()
+          PY
+      - name: Install, move prefix, build C11 and C++ clients and run five exact tests
+        run: |
+          python scripts/check_sdk_install.py --build build-package --output package-evidence \
+            --linkage ${{ matrix.linkage }} --spectral ${{ matrix.spectral }} --configuration Release
+      - name: Exact source identity
+        if: always()
+        run: |
+          mkdir -p package-evidence
+          git rev-parse HEAD > package-evidence/COMMIT.txt
+          git rev-parse HEAD^{tree} > package-evidence/TREE.txt
+          python - <<'PY'
+          import hashlib, json, pathlib, subprocess
+          paths = subprocess.check_output(['git', 'ls-files', '-z']).decode().split('\0')
+          identities = {p: hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() for p in paths if p}
+          pathlib.Path('package-evidence/SOURCE_SHA256.json').write_text(json.dumps(identities, indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sdk-install-${{ matrix.os }}-${{ matrix.linkage }}-${{ matrix.spectral }}
+          path: |
+            package-evidence/report.json
+            package-evidence/*.log
+            package-evidence/*.xml
+            package-evidence/COMMIT.txt
+            package-evidence/TREE.txt
+            package-evidence/SOURCE_SHA256.json
+          if-no-files-found: error

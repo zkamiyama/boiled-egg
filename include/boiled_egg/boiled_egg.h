@@ -4,7 +4,9 @@
 #include <stdint.h>
 
 #if defined(_WIN32)
-  #if defined(BOILED_EGG_BUILDING_LIBRARY)
+  #if defined(BOILED_EGG_STATIC)
+    #define BOILEDEGG_API
+  #elif defined(BOILED_EGG_BUILDING_LIBRARY)
     #define BOILEDEGG_API __declspec(dllexport)
   #else
     #define BOILEDEGG_API __declspec(dllimport)

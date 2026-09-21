@@ -41,6 +41,11 @@ else()
   add_library(boiled_egg STATIC ${BOILED_EGG_SOURCES})
 endif()
 add_library(boiled_egg::boiled_egg ALIAS boiled_egg)
+# Static clients must not emit DLL-import references on Windows.  PUBLIC also
+# carries this usage requirement into the installed/exported CMake target.
+if(NOT BOILED_EGG_BUILD_SHARED)
+  target_compile_definitions(boiled_egg PUBLIC BOILED_EGG_STATIC=1)
+endif()
 
 target_include_directories(boiled_egg
   PUBLIC
