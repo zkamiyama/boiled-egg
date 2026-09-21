@@ -1,9 +1,9 @@
 name: sdk-installation
 on:
   push:
-    paths: ['CMakeLists.txt', 'cmake/**', 'include/**', 'src/**', 'tests/backend_install/**', 'tests/install_relocated/**', 'scripts/check_sdk_install.py', 'scripts/test_check_sdk_install.py', 'quality/audition/run_ctest.py', '.github/workflows/sdk-installation.yml']
+    paths: ['CMakeLists.txt', 'cmake/**', 'include/**', 'src/**', 'tests/backend_install/**', 'tests/install_relocated/**', 'scripts/check_sdk_install.py', 'scripts/test_check_sdk_install.py', 'quality/audition/run_ctest.py', 'docs/SDK_INSTALLATION.md', 'docs/benchmarks/SDK_INSTALLATION_E1*', '.github/workflows/sdk-installation.yml']
   pull_request:
-    paths: ['CMakeLists.txt', 'cmake/**', 'include/**', 'src/**', 'tests/backend_install/**', 'tests/install_relocated/**', 'scripts/check_sdk_install.py', 'scripts/test_check_sdk_install.py', 'quality/audition/run_ctest.py', '.github/workflows/sdk-installation.yml']
+    paths: ['CMakeLists.txt', 'cmake/**', 'include/**', 'src/**', 'tests/backend_install/**', 'tests/install_relocated/**', 'scripts/check_sdk_install.py', 'scripts/test_check_sdk_install.py', 'quality/audition/run_ctest.py', 'docs/SDK_INSTALLATION.md', 'docs/benchmarks/SDK_INSTALLATION_E1*', '.github/workflows/sdk-installation.yml']
   workflow_dispatch:
 permissions:
   contents: read
