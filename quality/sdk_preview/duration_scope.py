@@ -5,10 +5,10 @@ import audit
 CHANGES = {
     'src/engine.cpp': (
         '302fa71eb60cdfc8889f8b2f0ad3125b256dc2d1554d3893dc2dd4d150b92f12',
-        'ea065158a1e27754ddd29475f847e655a5a89a583a5c80cac8aacf12c8ed6c6d'),
+        '7dce37ab64b3cf53c96458683e94f28bd82920199c944beeffc4c39461b3256f'),
     'src/engine.hpp': (
         '7b3e1f8ba60b150f4f499fe748148b1495d03ecb91edfadd27564d8af945f80e',
-        '56bf89d5cd0501cc82ba5f91e8b015ebc5a5c6434ee271952e2687114f6f82d3'),
+        'eb459ae0c9caf0d4cfd1b9f5583b22131afb03576a7cc3cba1263683e299475f'),
 }
 
 
@@ -37,5 +37,5 @@ def source_contract(main: Path, donor: Path, current: Path, package_reference: P
         protected.update(files)
     return dict(protected_sha256=protected, donor_runtime_sha256=parent['donor_runtime_sha256'],
                 protected_files=len(protected), runtime_files=len(runtime),
-                source_profile='fixed-wsola-duration-and-start-bound-v1',
+                source_profile='fixed-wsola-budget-progress-overlap-cache-v2',
                 allowed_runtime_change={k: dict(before=v[0], after=v[1]) for k, v in CHANGES.items()})
