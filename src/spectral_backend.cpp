@@ -22,6 +22,7 @@ SpectralBackend::SpectralBackend(const boiledegg_config& c,const boiledegg_backe
     pv.fft_size=b.quality_mode==BOILEDEGG_QUALITY_GENERAL?2048u:1024u;
     pv.analysis_hop=256;pv.mode=BOILEDEGG_RESEARCH_PV_RT_PHASE_LOCKED;
     pv.formant_mode=b.formant_policy;
+    if(b.flags&BOILEDEGG_BACKEND_FORMANT_LOW_DETAIL)pv.formant_cepstral_order=80;
     pv.initial_pitch_ratio=b.initial_pitch_ratio;pv.initial_time_ratio=b.initial_time_ratio;
     auto f=boiledegg_research_default_features();f.timing_policy=1;f.rate_policy=1;
     f.initial_formant_ratio=b.initial_formant_ratio;

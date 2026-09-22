@@ -208,7 +208,7 @@ boiledegg_result boiledegg_validate_backend_config(const boiledegg_config* c,con
     if (!c || c->struct_size<sizeof(*c) || !b || b->struct_size<sizeof(*b)) return BOILEDEGG_INVALID_ARGUMENT;
     if (!valid_audio(*c) || b->version!=BOILEDEGG_BACKEND_API_VERSION || b->backend_id>BOILEDEGG_BACKEND_PHASE_VOCODER ||
         b->quality_mode>BOILEDEGG_QUALITY_MONOPHONIC || b->formant_policy>BOILEDEGG_FORMANT_POLICY_MONOPHONIC ||
-        b->io_contract>BOILEDEGG_IO_REALTIME || (b->flags & ~(BOILEDEGG_BACKEND_ALLOW_EXPERIMENTAL|BOILEDEGG_BACKEND_CONTINUOUS_PITCH|BOILEDEGG_BACKEND_CONTINUOUS_TIME)) ||
+        b->io_contract>BOILEDEGG_IO_REALTIME || (b->flags & ~(BOILEDEGG_BACKEND_ALLOW_EXPERIMENTAL|BOILEDEGG_BACKEND_CONTINUOUS_PITCH|BOILEDEGG_BACKEND_CONTINUOUS_TIME|BOILEDEGG_BACKEND_FORMANT_LOW_DETAIL)) ||
         b->reserved[0] || b->reserved[1] || !ratio(b->initial_time_ratio,.25f,4.0f) ||
         !ratio(b->initial_pitch_ratio,.25f,4.0f) || !ratio(b->initial_formant_ratio,.5f,2.0f)) return BOILEDEGG_INVALID_ARGUMENT;
     boiledegg_backend_info info{}; info.struct_size=sizeof(info);
@@ -218,6 +218,15 @@ boiledegg_result boiledegg_validate_backend_config(const boiledegg_config* c,con
         !(info.quality_mode_mask&(1u<<b->quality_mode)) || !(info.formant_policy_mask&(1u<<b->formant_policy)) ||
         (b->formant_policy==BOILEDEGG_FORMANT_POLICY_OFF && b->initial_formant_ratio!=1.0f) ||
         (b->io_contract==BOILEDEGG_IO_REALTIME && b->initial_time_ratio!=1.0f)) return BOILEDEGG_UNSUPPORTED_MODE;
+    if(b->flags&BOILEDEGG_BACKEND_FORMANT_LOW_DETAIL) {
+        if(b->backend_id!=BOILEDEGG_BACKEND_PHASE_VOCODER ||
+           b->quality_mode!=BOILEDEGG_QUALITY_GENERAL ||
+           b->formant_policy!=BOILEDEGG_FORMANT_POLICY_MONOPHONIC ||
+           (c->sample_rate!=48000 && c->sample_rate!=96000) ||
+           b->initial_time_ratio!=1.0f ||
+           (b->flags&(BOILEDEGG_BACKEND_CONTINUOUS_PITCH|BOILEDEGG_BACKEND_CONTINUOUS_TIME)))
+            return BOILEDEGG_UNSUPPORTED_MODE;
+    }
     if(b->flags&BOILEDEGG_BACKEND_CONTINUOUS_TIME) {
         if(b->backend_id!=BOILEDEGG_BACKEND_PHASE_VOCODER || b->io_contract!=BOILEDEGG_IO_STREAMING ||
            !(b->flags&BOILEDEGG_BACKEND_CONTINUOUS_PITCH))return BOILEDEGG_UNSUPPORTED_MODE;
