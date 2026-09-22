@@ -1,14 +1,14 @@
-"""Exact reviewed WSOLA correctness edits; keep the prior package audit intact."""
+"""Exact reviewed WSOLA budget and same-output cost edits; keep the prior package audit intact."""
 from pathlib import Path
 import audit
 
 CHANGES = {
     'src/engine.cpp': (
         '302fa71eb60cdfc8889f8b2f0ad3125b256dc2d1554d3893dc2dd4d150b92f12',
-        'ea065158a1e27754ddd29475f847e655a5a89a583a5c80cac8aacf12c8ed6c6d'),
+        '11424ebdd51e05eed0f727ea86dc7573a9f58b0afa11e67141bc94f04dc6aef8'),
     'src/engine.hpp': (
         '7b3e1f8ba60b150f4f499fe748148b1495d03ecb91edfadd27564d8af945f80e',
-        '56bf89d5cd0501cc82ba5f91e8b015ebc5a5c6434ee271952e2687114f6f82d3'),
+        'eb76fd256ab270fe80aa68199788f67be630ebe0a46508cbf376bf6c16b8f445'),
 }
 
 
@@ -37,5 +37,5 @@ def source_contract(main: Path, donor: Path, current: Path, package_reference: P
         protected.update(files)
     return dict(protected_sha256=protected, donor_runtime_sha256=parent['donor_runtime_sha256'],
                 protected_files=len(protected), runtime_files=len(runtime),
-                source_profile='fixed-wsola-duration-and-start-bound-v1',
+                source_profile='fixed-wsola-budget-overlap-cost-v1',
                 allowed_runtime_change={k: dict(before=v[0], after=v[1]) for k, v in CHANGES.items()})

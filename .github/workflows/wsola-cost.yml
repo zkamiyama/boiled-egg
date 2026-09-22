@@ -1,0 +1,86 @@
+name: wsola-cost
+on:
+  push:
+    paths: ['src/**', 'include/**', 'tests/test_overlap_cost.cpp', 'quality/wsola_cost/**', 'quality/streaming_budget/**', 'quality/sdk_preview/**', 'docs/benchmarks/WSOLA_COST*', '.github/workflows/wsola-cost.yml']
+  pull_request:
+    paths: ['src/**', 'include/**', 'tests/test_overlap_cost.cpp', 'quality/wsola_cost/**', 'quality/streaming_budget/**', 'quality/sdk_preview/**', 'docs/benchmarks/WSOLA_COST*', '.github/workflows/wsola-cost.yml']
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  exact-output:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: gcc20, cc: gcc, cxx: g++, std: 20, sanitize: 'OFF'}
+          - {name: gcc23, cc: gcc, cxx: g++, std: 23, sanitize: 'OFF'}
+          - {name: clang20, cc: clang, cxx: clang++, std: 20, sanitize: 'OFF'}
+          - {name: clang23, cc: clang, cxx: clang++, std: 23, sanitize: 'OFF'}
+          - {name: asan, cc: clang, cxx: clang++, std: 20, sanitize: 'ON'}
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - name: Fresh SDK and independent controls
+        shell: bash
+        run: |
+          cmake -S . -B "$RUNNER_TEMP/sdk" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=${{ matrix.std }} \
+            -DBOILED_EGG_BUILD_TESTS=OFF -DBOILED_EGG_BUILD_TOOLS=OFF -DBOILED_EGG_BUILD_BENCH=OFF \
+            -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=OFF -DBOILED_EGG_SANITIZE=${{ matrix.sanitize }}
+          cmake --build "$RUNNER_TEMP/sdk" --parallel 2
+          cmake --install "$RUNNER_TEMP/sdk" --prefix "$RUNNER_TEMP/installed"
+          flags=()
+          if [[ '${{ matrix.sanitize }}' == ON ]]; then
+            flags+=('-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer' '-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined')
+          fi
+          for pair in 'wsola_cost cost' 'streaming_budget budget'; do
+            read -r source build <<< "$pair"
+            cmake -S "quality/$source" -B "$RUNNER_TEMP/$build" -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_CXX_STANDARD=${{ matrix.std }} -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/installed" "${flags[@]}"
+            cmake --build "$RUNNER_TEMP/$build" --parallel 2
+          done
+      - name: Exact native inventories and all2650 budget trials
+        run: |
+          python quality/audition/run_ctest.py --build "$RUNNER_TEMP/cost" --expected 1
+          python quality/audition/run_ctest.py --build "$RUNNER_TEMP/budget" --expected 7
+      - name: Fourteen calibration and rejection tests
+        run: |
+          python - <<'PY'
+          import sys, unittest
+          sys.path[:0] = ['quality/streaming_budget', 'quality/wsola_cost']
+          suite = unittest.defaultTestLoader.loadTestsFromNames(['test_compare', 'test_bench'])
+          assert suite.countTestCases() == 14
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          assert result.testsRun == 14 and not result.skipped and result.wasSuccessful()
+          PY
+      - name: Preserve source and actual test receipts
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p evidence
+          for name in cost budget; do
+            if test -f "$RUNNER_TEMP/$name/Testing/audition-complete.xml"; then
+              cp "$RUNNER_TEMP/$name/Testing/audition-complete.xml" "evidence/$name.xml"
+            fi
+          done
+          git rev-parse HEAD > evidence/COMMIT.txt
+          git rev-parse HEAD^{tree} > evidence/TREE.txt
+          git ls-files -z | xargs -0 sha256sum > evidence/SOURCE_SHA256SUMS
+          git archive --format=tar.gz HEAD > evidence/source.tar.gz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wsola-cost-${{ matrix.name }}
+          path: evidence/
+          if-no-files-found: error
