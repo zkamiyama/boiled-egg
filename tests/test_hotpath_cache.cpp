@@ -25,6 +25,42 @@ struct EngineCorrelationTest {
         }
         return static_cast<float>(dot / std::sqrt(aa*bb));
     }
+    static unsigned overlap_checks() {
+        std::mt19937 rng(20260922); unsigned compared=0;
+        for(unsigned channels : {1u,2u,8u}) for(unsigned window : {128u,256u,512u,1536u,2048u,8192u})
+        for(unsigned offset : {0u,32700u}) {
+            boiledegg_config c{}; c.sample_rate=48000;c.channels=channels;c.max_block_size=64;
+            c.window_frames=window;c.search_frames=window/8;c.fifo_frames=32771;
+            Engine engine(c); const auto weights=engine.overlap_weights_;
+            require(weights.size()==window/2,"wrong overlap cache size");
+            for(unsigned cycle=0;cycle<2;++cycle) {
+                engine.reset(); require(engine.overlap_weights_==weights,"reset changed immutable cache");
+                std::array<float,8> frame{};
+                for(unsigned i=0;i<offset+window;++i) {
+                    if(!engine.input_.free_space())engine.input_.discard_before(engine.input_.start_index()+1);
+                    for(unsigned ch=0;ch<channels;++ch)frame[ch]=static_cast<float>(static_cast<int>(rng()%2049u)-1024)/2048.f;
+                    require(engine.input_.push_one(frame.data()),"overlap input fixture");
+                }
+                for(auto& v:engine.prev_tail_)v=static_cast<float>(static_cast<int>(rng()%2049u)-1024)/2048.f;
+                auto expected=engine.prev_tail_;
+                for(unsigned ch=0;ch<channels;++ch)for(unsigned i=0;i<engine.overlap_;++i) {
+                    const float t=engine.overlap_>1?static_cast<float>(i)/static_cast<float>(engine.overlap_-1u):1.0f;
+                    const float w=0.5f-0.5f*std::cos(3.14159265358979323846f*t);
+                    require(std::bit_cast<uint32_t>(w)==std::bit_cast<uint32_t>(weights[i]),"cached overlap coefficient differs");
+                    const auto k=static_cast<size_t>(ch)*engine.overlap_+i;
+                    expected[k]=(1.0f-w)*engine.prev_tail_[k]+w*engine.input_.get(ch,offset+i);
+                }
+                engine.emit_overlap_frame(offset);
+                for(unsigned ch=0;ch<channels;++ch)for(unsigned i=0;i<engine.overlap_;++i) {
+                    const auto k=static_cast<size_t>(ch)*engine.overlap_+i;
+                    require(std::bit_cast<uint32_t>(expected[k])==std::bit_cast<uint32_t>(engine.intermediate_.get(ch,i)),"cached overlap changed PCM");
+                    require(engine.prev_tail_[k]==engine.input_.get(ch,offset+engine.hop_+i),"cached overlap changed tail");
+                    ++compared;
+                }
+            }
+        }
+        return compared;
+    }
     static unsigned run() {
         std::mt19937 rng(20260914); unsigned compared = 0;
         for (unsigned rate : {48000u, 96000u}) for (unsigned channels : {1u,2u,8u})
@@ -112,6 +148,8 @@ int main() {
     try {
         const auto spans=boiled_egg::detail::test_ring_spans();
         const auto scores=boiled_egg::detail::EngineCorrelationTest::run();
+        const auto overlap=boiled_egg::detail::EngineCorrelationTest::overlap_checks();
+        std::cout<<overlap<<" bit-identical overlap samples and immutable cache checks\n";
         std::cout<<spans<<" ring/span cases; "<<scores<<" bit-identical correlation scores and search choices\n";
     } catch(const std::exception& error) { std::cerr<<error.what()<<'\n'; return 1; }
 }

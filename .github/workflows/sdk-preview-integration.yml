@@ -77,6 +77,13 @@ jobs:
           ref: 2a65a0da25ac4a3d9cfa920d90524a16fbb4319b
           path: .package-reference
           persist-credentials: false
+      - uses: actions/checkout@v4
+        if: matrix.compiler == 'gcc' && matrix.standard == 20
+        with:
+          repository: zkamiyama/boiled-egg
+          ref: 7b256119baee9793ba32982b3b14e04ed03c94be
+          path: .duration-reference
+          persist-credentials: false
       - name: Execute unchanged old clients with three different SDK libraries
         if: matrix.compiler == 'gcc' && matrix.standard == 20
         run: |
@@ -92,10 +99,10 @@ jobs:
           gcc -O2 -std=c11 quality/sdk_preview/legacy_client.c -I.previous/include \
             -Lbuild-previous -Wl,-rpath,"$PWD/build-previous" -lboiled_egg -lm -o validation/legacy-c
           g++ -O2 -std=c++20 quality/sdk_preview/legacy_wrapper.cpp -I.previous/include \
-            -Lbuild-previous -Wl,-rpath,"$PWD/build-previous" -lboiled_egg -o validation/legacy-cpp
-          python quality/sdk_preview/audit.py \
+            -Lbuild-previous -Wl,-rpath,"$PWD/build-previous" -lboiled_egg -lm -o validation/legacy-cpp
+          python quality/sdk_preview/duration_audit.py \
             --baseline-source .previous --donor-source .donor --source . --host-reference-source .host-reference \
-            --package-reference-source .package-reference \
+            --package-reference-source .package-reference --duration-reference-source .duration-reference \
             --original-library build-previous/libboiled_egg.so \
             --off-library build-off/libboiled_egg.so --on-library build-on/libboiled_egg.so \
             --c-client validation/legacy-c --cpp-client validation/legacy-cpp \

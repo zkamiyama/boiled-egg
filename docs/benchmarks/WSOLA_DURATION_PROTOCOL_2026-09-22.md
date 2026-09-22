@@ -1,0 +1,20 @@
+# WSOLA streamed duration budget / 2026-09-22 JST
+
+Base main7b256119baee9793ba32982b3b14e04ed03c94be, tree f1b336c097f9afc778b0dd165cf567b872591891. Issue62; parent60/58/15. This is a bounded correctness fix, not a new pitch algorithm or product quality promotion. The previous extreme grid is evidence of the defect, not a new execution here. No vendor binary or Drive write is needed.
+
+## Invariant and candidate
+
+The engine already accumulates accepted input frames times the time ratio active at each push in target_output_accum_. Before EOF, newly generated output must not exceed floor(this accumulated budget). On EOF retain the existing llround rule. Zero padding used by the existing synthesis drain does not earn additional duration. No caller-side trimming, retrospective deletion, output gain fitting or added silence to hide excess output. Pending intermediate samples must not be consumed while no output budget remains.
+
+Candidate: update the integer output budget after each successful input acceptance and apply the existing output-loop limit before EOF as well as after it. Do not change candidate search, overlap, resampler taps/arithmetic, latency/tail, public ABI/state/IDs, parameter semantics, allocation or thread ownership. Realtime and variable streaming share the engine, so both require regression. Dynamic time budgets must integrate accepted samples, not final ratio times all input. Dynamic pitch does not change the duration budget.
+
+## Tests fixed before implementation
+
+1. Reproduce the three Issue62 cases with fresh baseline at48/96k, mono2seconds,64-frame partitions: (time,pitch)=(.25,1),(1,.25),(.5,.5). Record final length, premature output and raw PCM, including failed old output. New lengths must be exact and every preflush prefix stay within budget.
+2. Public C ABI regression:48/96k,mono/stereo,32/64/257 input partitions; lengths0,1,2,3,17,511,1152,4097,96000/192000; time/pitch .25/.5/1/2/4 and1.25/noninteger pitch where selected. EOF rounding, repeated flush/reset, partial input acceptance/backpressure, finite/nonzero and stereo proportionality. Use small exhaustive edge grid and separately named longer representative grid, with exact inventories in the test source before running.
+3. Dynamic setters at fixed source boundaries, time budget integrated per accepted push; test initial fast/slow combinations, increasing/decreasing time and pitch, differing block partitions. Characterize old/new PCM when timing changes; do not promise all old erroneous or dynamic outputs are identical. Test realtime original contracts separately; no silent skip.
+4. Same executable, fresh baseline/candidate libraries: exact hashes for established C/C++ legacy grids and spectral preview; compare old-good static PCM and retain failed/truncated old cases separately. If a valid historical contract changes, investigate before integration rather than waive the comparison.
+5. Run the applicable SDK suite ON/OFF, compiler GCC/Clang20/23, ASan/UBSan, existing threading tests/TSan where available, noalloc, C11/C++ installed consumers, exports and host regressions. CTest zero/skip/unbuilt is not success. Native Windows/macOS execution only counts if actually run.
+6. Cost: preregister fixed steady streaming/realtime settings at48/96k and32/64 blocks;3 fresh complete passes per setting/library in the same environment. Report median per-pass mean processing time, p99/max/deadline counts separately. Compare representative median cost ratio with1.25 limit; do not use host CLI launch as kernel timing or call best-of-repeat cells one complete pass. Tiny runs or noisy outliers do not establish hard realtime.
+
+Save source/inputs/binaries/config/measurement hashes and full results before choosing acceptance. New binaries receive new identities; old measurements are never relabelled. If an additional defect is discovered outside this scope, retain a reproducer and keep the issue boundary explicit. Issue41 low-tone accuracy, formant presets, PV range extension, MOS/naturalness and vendor parity remain separate.
