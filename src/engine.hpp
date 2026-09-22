@@ -185,7 +185,7 @@ private:
     uint64_t input_total_ = 0;
     uint64_t produced_total_ = 0;
     double target_output_accum_ = 0.0;
-    uint64_t target_output_frames_ = std::numeric_limits<uint64_t>::max();
+    uint64_t target_output_frames_ = 0;
 };
 
 } // namespace boiled_egg::detail

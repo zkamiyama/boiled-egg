@@ -42,7 +42,7 @@ boiledegg_result Engine::reset() noexcept {
     have_prev_ = false; flushing_ = false; flush_padding_done_ = false;
     next_expected_ = 0.0; last_start_ = 0; resample_pos_ = 0.0;
     input_total_ = 0; produced_total_ = 0; target_output_accum_ = 0.0;
-    target_output_frames_ = std::numeric_limits<uint64_t>::max();
+    target_output_frames_ = 0;
     return BOILEDEGG_OK;
 }
 
@@ -65,6 +65,9 @@ boiledegg_result Engine::push(const float* const* input, uint32_t frames, uint32
     if (!input_.push_planar(input, n)) return BOILEDEGG_INTERNAL_ERROR;
     accepted = n; input_total_ += n;
     target_output_accum_ += static_cast<double>(n) * static_cast<double>(time_ratio_);
+    // Only accepted input earns output duration. Keep fractional credit until
+    // flush rounds the final budget; never publish samples we cannot retract.
+    target_output_frames_ = static_cast<uint64_t>(target_output_accum_);
     process_available();
     return n == frames ? BOILEDEGG_OK : BOILEDEGG_BUFFER_FULL;
 }
@@ -272,7 +275,7 @@ void Engine::process_resampler() noexcept {
     const double desired_cutoff = 0.94 * std::min(1.0, 1.0 / static_cast<double>(pitch_ratio_));
     const int cutoff_index = ResamplerKernelBank::cutoff_index(desired_cutoff);
     while (output_.free_space() > 0) {
-        if (flushing_ && produced_total_ >= target_output_frames_) return;
+        if (produced_total_ >= target_output_frames_) return;
         const int64_t center = static_cast<int64_t>(std::floor(resample_pos_));
         const int64_t first = center - (kHalf - 1), last = center + kHalf;
         if (last < 0 || static_cast<uint64_t>(last) >= intermediate_.end_index()) return;
