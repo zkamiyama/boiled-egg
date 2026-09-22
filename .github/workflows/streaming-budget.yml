@@ -1,0 +1,63 @@
+name: streaming-budget
+on:
+  pull_request:
+    paths: ['src/engine.*', 'tests/test_hotpath_cache.cpp', 'docs/benchmarks/WSOLA_COST*', 'quality/streaming_budget/**', '.github/workflows/streaming-budget.yml']
+  push:
+    paths: ['src/engine.*', 'tests/test_hotpath_cache.cpp', 'docs/benchmarks/WSOLA_COST*', 'quality/streaming_budget/**', '.github/workflows/streaming-budget.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  public-abi:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {cc: gcc, cxx: g++, standard: 20, sanitize: 'OFF'}
+          - {cc: gcc, cxx: g++, standard: 23, sanitize: 'OFF'}
+          - {cc: clang, cxx: clang++, standard: 20, sanitize: 'OFF'}
+          - {cc: clang, cxx: clang++, standard: 23, sanitize: 'OFF'}
+          - {cc: clang, cxx: clang++, standard: 20, sanitize: 'ON'}
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - name: Build and install the actual current SDK
+        run: |
+          cmake -S . -B "$RUNNER_TEMP/sdk" -DCMAKE_BUILD_TYPE=Release \
+            -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON \
+            -DCMAKE_CXX_STANDARD=${{ matrix.standard }} -DBOILED_EGG_SANITIZE=${{ matrix.sanitize }}
+          cmake --build "$RUNNER_TEMP/sdk" --target boiled_egg -j2
+          cmake --install "$RUNNER_TEMP/sdk" --prefix "$RUNNER_TEMP/install"
+      - name: Separate public-ABI test client
+        run: |
+          flags=''
+          if test '${{ matrix.sanitize }}' = ON; then flags='-fsanitize=address,undefined -fno-omit-frame-pointer'; fi
+          cmake -S quality/streaming_budget -B "$RUNNER_TEMP/budget-tests" \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=${{ matrix.standard }} \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/install" -DCMAKE_CXX_FLAGS="$flags"
+          cmake --build "$RUNNER_TEMP/budget-tests" -j2
+          python quality/audition/run_ctest.py --build "$RUNNER_TEMP/budget-tests" --expected 7
+          python -m pip install numpy==2.3.5
+          python - <<'PY'
+          import sys,unittest
+          sys.path.insert(0,'quality/streaming_budget')
+          suite=unittest.defaultTestLoader.loadTestsFromNames(['test_compare','test_cost'])
+          assert suite.countTestCases()==18
+          r=unittest.TextTestRunner(verbosity=2).run(suite)
+          assert r.testsRun==18 and not r.skipped and r.wasSuccessful()
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: budget-${{ matrix.cxx }}-${{ matrix.standard }}-san-${{ matrix.sanitize }}
+          path: ${{ runner.temp }}/budget-tests/Testing
+          if-no-files-found: error
