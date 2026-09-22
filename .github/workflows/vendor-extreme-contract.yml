@@ -1,0 +1,60 @@
+name: vendor-extreme-contract
+on:
+  push:
+    paths: ['quality/vendor_reaper/**', 'eval/comparison_contract.py', 'eval/offline_pv_benchmark.py', 'docs/benchmarks/EXTREME_PRESETS*', '.github/workflows/vendor-extreme-contract.yml']
+  pull_request:
+    paths: ['quality/vendor_reaper/**', 'eval/comparison_contract.py', 'eval/offline_pv_benchmark.py', 'docs/benchmarks/EXTREME_PRESETS*', '.github/workflows/vendor-extreme-contract.yml']
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  calibration-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.13']
+    env:
+      PYTHONPATH: quality/vendor_reaper:eval
+      OPENBLAS_NUM_THREADS: 1
+      OMP_NUM_THREADS: 1
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '${{ matrix.python }}'}
+      - name: Numerical dependencies only
+        run: python -m pip install numpy==2.3.5 scipy==1.17.0 soundfile==0.13.1
+      - name: Exactly45 unique tests with zero skips, no vendor runtime
+        run: |
+          mkdir evidence
+          python - <<'PY' 2>&1 | tee evidence/tests.log
+          import json,pathlib,unittest
+          suite=unittest.defaultTestLoader.loadTestsFromNames(['test_extreme','test_vendor','test_comparison_contract'])
+          def ids(s):
+              return [i for child in s for i in ids(child)] if isinstance(s,unittest.TestSuite) else [s.id()]
+          names=ids(suite)
+          assert len(names)==len(set(names))==45,names
+          result=unittest.TextTestRunner(verbosity=2).run(suite)
+          ok=result.wasSuccessful() and result.testsRun==45 and not result.skipped
+          pathlib.Path('evidence/tests.json').write_text(json.dumps(dict(expected=45,executed=result.testsRun,skipped=len(result.skipped),passed=ok,ids=names,proprietary_runtime_executed=False,quality_selection=None),indent=2))
+          raise SystemExit(0 if ok else 1)
+          PY
+      - name: Exact source identity
+        if: always()
+        run: |
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/COMMIT.txt
+          git rev-parse HEAD^{tree} > evidence/TREE.txt
+          git ls-files -z | xargs -0 sha256sum > evidence/SOURCE_SHA256SUMS
+          git archive --format=tar.gz HEAD > evidence/source.tar.gz
+          python -m pip freeze > evidence/PYTHON_VERSIONS.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: extreme-contract-python-${{ matrix.python }}
+          path: evidence/
+          if-no-files-found: error
