@@ -23,6 +23,12 @@ def run(args):
              Path(__file__),Path(a.__file__),Path(duration_scope.__file__)]
     files={str(p):a.sha(p) for p in tracked}
     def scope():return duration_scope.source_contract(base,donor,current,package,reference,host)
+    formant_reference=getattr(args,'formant_reference_source',None)
+    if formant_reference is not None:
+        import formant_scope
+        formant_reference=formant_reference.resolve(strict=True)
+        scope=lambda:formant_scope.source_contract(base,donor,current,package,reference,formant_reference,host)
+        files[str(Path(formant_scope.__file__))]=a.sha(Path(formant_scope.__file__))
     checked=scope()
     args.output.mkdir(parents=True)
     (args.output/'plan.json').write_text(json.dumps(dict(files=files,sources=checked),indent=2)+'\n')
@@ -56,5 +62,6 @@ if __name__=='__main__':
                  'duration-reference-source','host-reference-source','original-library','off-library',
                  'on-library','c-client','cpp-client','donor-replay','candidate-replay','output'):
         p.add_argument('--'+name,type=Path,required=True)
+    p.add_argument('--formant-reference-source',type=Path,help='Pinned post-duration source; exact three-file formant-option scope')
     r=run(p.parse_args())
     print(json.dumps({k:r[k] for k in ('legacy_pairs','preview_pairs','runtime_files','protected_files')}))
