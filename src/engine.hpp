@@ -122,6 +122,7 @@ private:
 };
 
 class Engine {
+    friend struct EngineOverlapCostTest; // Exact overlap arithmetic and cache regression.
     friend struct EngineCorrelationTest; // Internal numerical regression, not an installed API.
 public:
     explicit Engine(const boiledegg_config& config);
@@ -164,6 +165,7 @@ private:
     PlanarRing intermediate_;
     PlanarRing output_;
 
+    std::vector<float> overlap_weights_; // Immutable, one channel-independent fade; construction only.
     std::vector<float> prev_tail_;     // channels * overlap
     std::vector<float> emit_scratch_;  // channels * hop
     // Construction-only scratch. Cached channel means retain the original
@@ -185,7 +187,7 @@ private:
     uint64_t input_total_ = 0;
     uint64_t produced_total_ = 0;
     double target_output_accum_ = 0.0;
-    uint64_t target_output_frames_ = 0;
+    uint64_t target_output_frames_ = std::numeric_limits<uint64_t>::max();
 };
 
 } // namespace boiled_egg::detail
