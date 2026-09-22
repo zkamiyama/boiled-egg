@@ -23,11 +23,17 @@ Engine::Engine(const boiledegg_config& c)
       output_(c.channels, c.fifo_frames),
       prev_tail_(static_cast<size_t>(c.channels) * overlap_, 0.0f),
       emit_scratch_(static_cast<size_t>(c.channels) * hop_, 0.0f),
+      overlap_weights_(overlap_, 0.0f),
       correlation_tail_(overlap_, 0.0),
       correlation_input_(static_cast<size_t>(overlap_) + 2u * static_cast<size_t>(search_), 0.0),
       sample_scratch_(c.channels, 0.0f),
       zero_scratch_(static_cast<size_t>(c.channels) * c.max_block_size, 0.0f),
       zero_ptrs_(c.channels, nullptr) {
+    // Retain the exact original float expression; no approximation or fast-math.
+    for (uint32_t i = 0; i < overlap_; ++i) {
+        const float t = overlap_ > 1 ? static_cast<float>(i) / static_cast<float>(overlap_ - 1u) : 1.0f;
+        overlap_weights_[i] = 0.5f - 0.5f * std::cos(kPi * t);
+    }
     for (uint32_t ch = 0; ch < channels_; ++ch) {
         zero_ptrs_[ch] = zero_scratch_.data() + static_cast<size_t>(ch) * max_block_;
     }
@@ -42,7 +48,7 @@ boiledegg_result Engine::reset() noexcept {
     have_prev_ = false; flushing_ = false; flush_padding_done_ = false;
     next_expected_ = 0.0; last_start_ = 0; resample_pos_ = 0.0;
     input_total_ = 0; produced_total_ = 0; target_output_accum_ = 0.0;
-    target_output_frames_ = 0;
+    target_output_frames_ = std::numeric_limits<uint64_t>::max();
     return BOILEDEGG_OK;
 }
 
@@ -65,9 +71,6 @@ boiledegg_result Engine::push(const float* const* input, uint32_t frames, uint32
     if (!input_.push_planar(input, n)) return BOILEDEGG_INTERNAL_ERROR;
     accepted = n; input_total_ += n;
     target_output_accum_ += static_cast<double>(n) * static_cast<double>(time_ratio_);
-    // Only accepted input earns output duration. Keep fractional credit until
-    // flush rounds the final budget; never publish samples we cannot retract.
-    target_output_frames_ = static_cast<uint64_t>(target_output_accum_);
     process_available();
     return n == frames ? BOILEDEGG_OK : BOILEDEGG_BUFFER_FULL;
 }
@@ -189,8 +192,7 @@ void Engine::emit_overlap_frame(int64_t start) noexcept {
         float* emit = emit_scratch_.data() + static_cast<size_t>(ch) * hop_;
         float* tail = prev_tail_.data() + static_cast<size_t>(ch) * overlap_;
         for (uint32_t i = 0; i < overlap_; ++i) {
-            const float t = overlap_ > 1 ? static_cast<float>(i) / static_cast<float>(overlap_ - 1u) : 1.0f;
-            const float w = 0.5f - 0.5f * std::cos(kPi * t);
+            const float w = overlap_weights_[i];
             const float cur = input_.get(ch, start + static_cast<int64_t>(i));
             emit[i] = (1.0f - w) * tail[i] + w * cur;
         }
@@ -211,8 +213,12 @@ bool Engine::process_wsola_frame() noexcept {
         return true;
     }
     const int64_t expected = static_cast<int64_t>(std::llround(next_expected_));
+    const int64_t low_need = expected - static_cast<int64_t>(search_);
     const int64_t high_need = expected + static_cast<int64_t>(search_) + static_cast<int64_t>(window_);
-    // choose_candidate clips the search to available input at the file start.
+    // The next search never reads earlier samples. Reclaim them even while
+    // waiting for a long analysis hop, so a legal small FIFO can make progress.
+    // At startup choose_candidate() already clamps a negative lower bound.
+    input_.discard_before(static_cast<uint64_t>(std::max<int64_t>(0, low_need)));
     if (static_cast<uint64_t>(high_need) > input_.end_index()) return false;
     const int64_t chosen = choose_candidate(expected);
     if (chosen == std::numeric_limits<int64_t>::min()) return false;
@@ -269,12 +275,20 @@ void warm_resampler_bank() { (void)resampler_bank(); }
 } // namespace
 
 void Engine::process_resampler() noexcept {
+    // Only accepted input earns output time.  A WSOLA hop can be larger than
+    // that budget at compression / pitch-down boundaries; never release its
+    // speculative samples before more input arrives.  Keep the final nearest-
+    // integer rounding in flush(), but only complete frames before EOF.
+    const uint64_t output_limit = flushing_ ? target_output_frames_
+        : static_cast<uint64_t>(target_output_accum_);
+    // Avoid invariant kernel preparation on the frequent no-output calls.
+    if (produced_total_ >= output_limit || output_.free_space() == 0) return;
     const auto& bank = resampler_bank();
     constexpr int kTaps = ResamplerKernelBank::taps, kHalf = ResamplerKernelBank::half;
     const double desired_cutoff = 0.94 * std::min(1.0, 1.0 / static_cast<double>(pitch_ratio_));
     const int cutoff_index = ResamplerKernelBank::cutoff_index(desired_cutoff);
     while (output_.free_space() > 0) {
-        if (produced_total_ >= target_output_frames_) return;
+        if (produced_total_ >= output_limit) return;
         const int64_t center = static_cast<int64_t>(std::floor(resample_pos_));
         const int64_t first = center - (kHalf - 1), last = center + kHalf;
         if (last < 0 || static_cast<uint64_t>(last) >= intermediate_.end_index()) return;

@@ -166,6 +166,8 @@ private:
 
     std::vector<float> prev_tail_;     // channels * overlap
     std::vector<float> emit_scratch_;  // channels * hop
+    // Immutable per-configuration coefficients, shared by all channels.
+    std::vector<float> overlap_weights_; // overlap, computed only at construction
     // Construction-only scratch. Cached channel means retain the original
     // double arithmetic and candidate/stride accumulation order.
     std::vector<double> correlation_tail_, correlation_input_;
@@ -185,7 +187,7 @@ private:
     uint64_t input_total_ = 0;
     uint64_t produced_total_ = 0;
     double target_output_accum_ = 0.0;
-    uint64_t target_output_frames_ = 0;
+    uint64_t target_output_frames_ = std::numeric_limits<uint64_t>::max();
 };
 
 } // namespace boiled_egg::detail
