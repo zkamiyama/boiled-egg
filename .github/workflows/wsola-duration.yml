@@ -1,0 +1,69 @@
+name: wsola-duration
+on:
+  push:
+    paths: ['src/**', 'include/**', 'quality/wsola_duration/**', 'quality/sdk_preview/**', 'docs/benchmarks/WSOLA_DURATION*', '.github/workflows/wsola-duration.yml']
+  pull_request:
+    paths: ['src/**', 'include/**', 'quality/wsola_duration/**', 'quality/sdk_preview/**', 'docs/benchmarks/WSOLA_DURATION*', '.github/workflows/wsola-duration.yml']
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  duration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: gcc20, cc: gcc, cxx: g++, std: 20, sanitize: 'OFF'}
+          - {name: gcc23, cc: gcc, cxx: g++, std: 23, sanitize: 'OFF'}
+          - {name: clang20, cc: clang, cxx: clang++, std: 20, sanitize: 'OFF'}
+          - {name: clang23, cc: clang, cxx: clang++, std: 23, sanitize: 'OFF'}
+          - {name: asan, cc: clang, cxx: clang++, std: 20, sanitize: 'ON'}
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Build existing SDK and an external installed consumer
+        shell: bash
+        run: |
+          cmake -S . -B sdk -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=${{ matrix.std }} \
+            -DBOILED_EGG_BUILD_TESTS=OFF -DBOILED_EGG_BUILD_TOOLS=OFF -DBOILED_EGG_BUILD_BENCH=OFF \
+            -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=OFF -DBOILED_EGG_SANITIZE=${{ matrix.sanitize }}
+          cmake --build sdk --parallel 2
+          cmake --install sdk --prefix "$RUNNER_TEMP/duration-sdk"
+          flags=()
+          if [[ '${{ matrix.sanitize }}' == ON ]]; then
+            flags+=('-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer' '-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined')
+          fi
+          cmake -S quality/wsola_duration -B duration -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_STANDARD=${{ matrix.std }} -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/duration-sdk" "${flags[@]}"
+          cmake --build duration --parallel 2
+      - name: Exactly five enabled tests covering396 cases, including reset repeats
+        run: python quality/audition/run_ctest.py --build duration --expected 5
+      - name: Exact legacy scope controls
+        run: python -m unittest discover -s quality/sdk_preview -p 'test_*.py' -v
+      - name: Capture exact source and test evidence
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p evidence
+          cp duration/Testing/audition-complete.xml evidence/ || true
+          git rev-parse HEAD > evidence/COMMIT.txt
+          git rev-parse HEAD^{tree} > evidence/TREE.txt
+          git ls-files -z | xargs -0 sha256sum > evidence/SOURCE_SHA256SUMS
+          git archive --format=tar.gz HEAD > evidence/source.tar.gz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: duration-${{ matrix.name }}
+          path: evidence/
+          if-no-files-found: error
