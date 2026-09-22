@@ -211,9 +211,8 @@ bool Engine::process_wsola_frame() noexcept {
         return true;
     }
     const int64_t expected = static_cast<int64_t>(std::llround(next_expected_));
-    const int64_t low_need = expected - static_cast<int64_t>(search_);
     const int64_t high_need = expected + static_cast<int64_t>(search_) + static_cast<int64_t>(window_);
-    if (low_need < 0) return false;
+    // choose_candidate clips the search to available input at the file start.
     if (static_cast<uint64_t>(high_need) > input_.end_index()) return false;
     const int64_t chosen = choose_candidate(expected);
     if (chosen == std::numeric_limits<int64_t>::min()) return false;
