@@ -76,6 +76,23 @@ bool fft_plan::advance(cursor& s,std::size_t budget) const noexcept {
             }
             if(s.position==size_){s.stage=1;s.position=0;}
         } else if(s.stage==1) {
+            // Length-two butterflies are independent and always scalar in the
+            // original traversal (one column per base). Batch their bookkeeping,
+            // not their arithmetic. Consume exactly the same budget and retain
+            // multiplication by the stored root, including signed-zero behavior.
+            if(s.length==2) {
+                const auto count=std::min((size_-s.base)/2,budget);
+                const auto root=s.inverse?std::conj(stage_roots_[0]):stage_roots_[0];
+                for(std::size_t j=0;j<count;++j) {
+                    auto* pair=s.data+s.base+2*j;
+                    const auto a=pair[0],b=pair[1]*root;
+                    pair[0]=a+b;pair[1]=a-b;
+                }
+                budget-=count;s.base+=2*count;
+                if(s.base==size_){s.base=0;s.length=4;}
+                if(s.length>size_){s.stage=s.inverse?2:3;s.position=0;}
+                continue;
+            }
             const auto half=s.length/2;
             auto count=std::min({half-s.column,budget,(std::size_t)256});
             budget-=count;
