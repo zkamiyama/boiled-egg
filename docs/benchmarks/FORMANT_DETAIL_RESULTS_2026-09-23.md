@@ -53,7 +53,7 @@ Existing joint-sinusoid measurement uses the0.5–1.5s interval,250–3500Hz and
 amplitude targets, without gain/lag fitting. Peak/RMS and unexplained energy stay
 separate. Sixteen old-main renders use the same current executable and explicit
 old SDK loading; all16 match unflagged current PCM. All96 completed and repeated
-PCM matches. The original32raw inputs include stereo counterparts for the cost run.
+PCM matches. The original16raw inputs include stereo counterparts for the cost run.
 
 Public cost:48/96k xmono/stereo x32/64blocks xstream/fixed-I/O x±12st xold/newflag
 x3repetitions=192renders. Same2second input, pinned CPU and alternating flag order.
@@ -150,3 +150,28 @@ are independently checked against local trees. Final known-data regression is a
 limited preview acceptance, not all of Issue67, broad input-range presets, new
 quality mode, new plugin state or the remaining extreme-pitch roadmap. No Drive
 write and no vendor execution in this continuation.
+
+## Final readback supplement
+
+The two acquired PR CI artifacts10725622778(replay) and10725732551(legacy
+compatibility) have384 source files identical to the reviewed local tree. Their
+synthetic merge is d02595379b90b5b15c685a2fd9ef32367dbbbbf2. All112CI audio files
+and receipts were read back;16old/new unflagged outputs match within CI. All16
+input files match local bytes. CI/local output PCM is NOT bit-identical (0/112),
+with maximum sample difference1.536356285214424e-5; metrics are also separate.
+The same8quality decisions pass, CI check means11.7007633336->6.9922137342.
+Different compilers/libm/platforms are recorded, not a proved cause of every
+difference. Five downloaded compiler-control artifacts each contain8unique
+executed, non-skipped JUnit tests. Legacy CSVs independently confirmC288x2,
+C++12x2,144partition pairs and156preview pairs;19internal evidence hashes match.
+
+The stored local maximum timings also permit an80%-period diagnostic: both flags
+pass all8 of the48k settings. At96k the old flag passes0/8 and the new flag1/8.
+Worst state best-of-three maximum/period is old1.7655165,new4.974951. Actual runs
+with every callback within its period are22/48 and27/48 respectively. Hence both
+fail a full deadline qualification despite the average cost gate passing. Do not
+use this preview's API availability as a real-time capacity guarantee.
+
+Correction: the input inventory is16files (4families x2rates x2channel layouts),
+not32. It was counted from the saved plan; no inputs or measurements were changed.
+This documentary correction/readback supplement does not alter measured code.
