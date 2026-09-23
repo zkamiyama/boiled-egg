@@ -98,6 +98,13 @@ jobs:
           ref: b972e0355ae656a74fb3fb1b1a99429f1668a5e4
           path: .ring-reference
           persist-credentials: false
+      - uses: actions/checkout@v4
+        if: matrix.compiler == 'gcc' && matrix.standard == 20
+        with:
+          repository: zkamiyama/boiled-egg
+          ref: d4093d87aba960a1965b1243f6e685a23420ff25
+          path: .fft-stage-reference
+          persist-credentials: false
       - name: Execute unchanged old clients with three different SDK libraries
         if: matrix.compiler == 'gcc' && matrix.standard == 20
         run: |
@@ -116,7 +123,7 @@ jobs:
             -Lbuild-previous -Wl,-rpath,"$PWD/build-previous" -lboiled_egg -lm -o validation/legacy-cpp
           python quality/sdk_preview/duration_audit.py \
             --baseline-source .previous --donor-source .donor --source . --host-reference-source .host-reference \
-            --package-reference-source .package-reference --duration-reference-source .duration-reference --formant-reference-source .formant-reference --ring-reference-source .ring-reference \
+            --package-reference-source .package-reference --duration-reference-source .duration-reference --formant-reference-source .formant-reference --ring-reference-source .ring-reference --fft-stage-reference-source .fft-stage-reference \
             --original-library build-previous/libboiled_egg.so \
             --off-library build-off/libboiled_egg.so --on-library build-on/libboiled_egg.so \
             --c-client validation/legacy-c --cpp-client validation/legacy-cpp \
