@@ -1,0 +1,102 @@
+name: formant-detail
+on:
+  push:
+    paths: ['include/**', 'src/**', 'quality/formant_detail/**', 'quality/sdk_preview/**', 'docs/FORMANT_LOW_DETAIL.md', 'docs/benchmarks/FORMANT_*', '.github/workflows/formant-detail.yml']
+  pull_request:
+    paths: ['include/**', 'src/**', 'quality/formant_detail/**', 'quality/sdk_preview/**', 'docs/FORMANT_LOW_DETAIL.md', 'docs/benchmarks/FORMANT_*', '.github/workflows/formant-detail.yml']
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: gcc20, cc: gcc, cxx: g++, std: 20, sanitize: 'OFF'}
+          - {name: gcc23, cc: gcc, cxx: g++, std: 23, sanitize: 'OFF'}
+          - {name: clang20, cc: clang, cxx: clang++, std: 20, sanitize: 'OFF'}
+          - {name: clang23, cc: clang, cxx: clang++, std: 23, sanitize: 'OFF'}
+          - {name: asan, cc: clang, cxx: clang++, std: 20, sanitize: 'ON'}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Build and execute all eight public option controls
+        run: |
+          cmake -S quality/formant_detail -B "$RUNNER_TEMP/detail" -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=${{ matrix.cc }} -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} -DCMAKE_CXX_STANDARD=${{ matrix.std }} -DBOILED_EGG_SANITIZE=${{ matrix.sanitize }}
+          cmake --build "$RUNNER_TEMP/detail" -j2
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 python quality/audition/run_ctest.py --build "$RUNNER_TEMP/detail" --expected 8
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: formant-detail-${{ matrix.name }}
+          path: ${{ runner.temp }}/detail/Testing
+          if-no-files-found: error
+  replay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env: {OPENBLAS_NUM_THREADS: '1', OMP_NUM_THREADS: '1'}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false, fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - name: Build exact old SDK and current public option
+        run: |
+          python -m pip install numpy==2.3.5 scipy==1.17.0 soundfile==0.13.1
+          mkdir -p "$RUNNER_TEMP/before" "$RUNNER_TEMP/evidence"
+          git archive 086a26daec314534a4246203636bafa84d0c1373 | tar -x -C "$RUNNER_TEMP/before"
+          cmake -S "$RUNNER_TEMP/before" -B "$RUNNER_TEMP/old" -DCMAKE_BUILD_TYPE=Release -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON -DBOILED_EGG_BUILD_TESTS=OFF -DBOILED_EGG_BUILD_TOOLS=OFF -DBOILED_EGG_BUILD_BENCH=OFF
+          cmake --build "$RUNNER_TEMP/old" --target boiled_egg -j2
+          cmake -S quality/formant_detail -B "$RUNNER_TEMP/detail" -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/detail" -j2
+      - name: Seven calibration methods, no skips
+        run: |
+          PYTHONPATH=quality/formant_detail python - <<'PY' 2>&1 | tee "$RUNNER_TEMP/evidence/python-tests.log"
+          import unittest
+          s=unittest.defaultTestLoader.loadTestsFromName('test_verify')
+          assert s.countTestCases()==7
+          r=unittest.TextTestRunner(verbosity=2).run(s)
+          assert r.testsRun==7 and not r.skipped and r.wasSuccessful()
+          PY
+      - name: Freeze input and code hashes, then execute full known regression
+        run: |
+          out="$RUNNER_TEMP/evidence"
+          python quality/formant_detail/verify.py prepare --runner "$RUNNER_TEMP/detail/formant_render" --before "$RUNNER_TEMP/old/libboiled_egg.so" --after "$RUNNER_TEMP/detail/sdk/libboiled_egg.so" --out "$out/plan" | tee "$out/PLAN_SHA256"
+          python quality/formant_detail/verify.py run --plan "$out/plan/plan.json" --sha256 "$(cat "$out/PLAN_SHA256")" --mode quality --out "$out/quality"
+          python quality/formant_detail/verify.py run --plan "$out/plan/plan.json" --sha256 "$(cat "$out/PLAN_SHA256")" --mode old --out "$out/old"
+      - name: Read stored audio and compare unchanged choices
+        run: |
+          PYTHONPATH=quality/formant_detail python - <<'PY'
+          import hashlib,json,os,pathlib,numpy as np
+          import verify as v
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'evidence'
+          q=json.loads((root/'quality/summary.json').read_text()); old=json.loads((root/'old/summary.json').read_text())
+          assert v.assess_quality(q['rows'])['passed'] and len(old['rows'])==16
+          for row in q['rows']+old['rows']:
+              assert row['status']=='complete'
+              p=pathlib.Path(row['output']); assert v.sha(p)==row['pcm_sha256']
+              y=np.fromfile(p,dtype='<f4'); assert len(y)==row['rate']*2 and np.isfinite(y).all() and np.any(y)
+              assert v.sha(row['receipt'])==row['receipt_sha256']
+          current={(r['family'],r['rate'],r['shift']):r for r in q['rows'] if r['detail']==0 and r['repeat']==0}
+          assert all(r['pcm_sha256']==current[(r['family'],r['rate'],r['shift'])]['pcm_sha256'] for r in old['rows'])
+          (root/'readback.json').write_text(json.dumps(dict(audio=112,old_equal=16,independent_holdout=False)))
+          PY
+      - name: Preserve exact source and failures
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/evidence"
+          git rev-parse HEAD > "$RUNNER_TEMP/evidence/COMMIT.txt"
+          git rev-parse HEAD^{tree} > "$RUNNER_TEMP/evidence/TREE.txt"
+          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/evidence/source.tar.gz"
+          git ls-files -z | xargs -0 sha256sum > "$RUNNER_TEMP/evidence/SOURCE_SHA256SUMS"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: formant-detail-replay
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: error

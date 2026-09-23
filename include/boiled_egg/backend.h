@@ -35,6 +35,14 @@ typedef enum boiledegg_backend_status {
 /* Explicit input-domain time trajectories; streaming-only, implies continuous
  * pitch. Pitch/time are owned by the ramp API on these handles, not UI setters. */
 #define BOILEDEGG_BACKEND_CONTINUOUS_TIME (1u << 2)
+/* Explicit low-register envelope-detail preview, not an F0 range selector.
+ * PV General + Monophonic, 48/96 kHz, fixed time==1 and fixed pitch only.
+ * Reuses the existing FFT/hop/latency; raises the cepstral lifter order from
+ * 40 to 80 before rate scaling. No automatic selection. Not valid with
+ * CONTINUOUS_PITCH/TIME, Harmonic, Off or other backends/qualities/rates.
+ * This immutable choice is returned by get_backend_configuration; it is NOT
+ * serialized by the parameter-only state APIs. Store construction config too. */
+#define BOILEDEGG_BACKEND_FORMANT_LOW_DETAIL (1u << 3)
 /* Backend feature flags: distinct from boiledegg_runtime_info capabilities. */
 #define BOILEDEGG_BACKEND_STREAMING          (1u << 0)
 #define BOILEDEGG_BACKEND_REALTIME           (1u << 1)
