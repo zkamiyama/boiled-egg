@@ -29,6 +29,13 @@ def run(args):
         formant_reference=formant_reference.resolve(strict=True)
         scope=lambda:formant_scope.source_contract(base,donor,current,package,reference,formant_reference,host)
         files[str(Path(formant_scope.__file__))]=a.sha(Path(formant_scope.__file__))
+    ring_reference=getattr(args,'ring_reference_source',None)
+    if ring_reference is not None:
+        if formant_reference is None:raise ValueError('ring scope requires formant predecessor')
+        import ring_scope
+        ring_reference=ring_reference.resolve(strict=True)
+        scope=lambda:ring_scope.source_contract(base,donor,current,package,reference,formant_reference,ring_reference,host)
+        files[str(Path(ring_scope.__file__))]=a.sha(Path(ring_scope.__file__))
     checked=scope()
     args.output.mkdir(parents=True)
     (args.output/'plan.json').write_text(json.dumps(dict(files=files,sources=checked),indent=2)+'\n')
@@ -63,5 +70,6 @@ if __name__=='__main__':
                  'on-library','c-client','cpp-client','donor-replay','candidate-replay','output'):
         p.add_argument('--'+name,type=Path,required=True)
     p.add_argument('--formant-reference-source',type=Path,help='Pinned post-duration source; exact three-file formant-option scope')
+    p.add_argument('--ring-reference-source',type=Path,help='Pinned post-formant source; exact ring-address replacement scope')
     r=run(p.parse_args())
     print(json.dumps({k:r[k] for k in ('legacy_pairs','preview_pairs','runtime_files','protected_files')}))

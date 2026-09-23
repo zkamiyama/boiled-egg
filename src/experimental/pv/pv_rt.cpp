@@ -5,6 +5,7 @@
 #include "execution_helpers.hpp"
 #include "work_sequence.hpp"
 #include "pitch_timeline.hpp"
+#include "ring_index.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -271,7 +272,7 @@ public:
         for (std::uint32_t ch = 0; ch < channels_; ++ch) if (frames != 0U && input[ch] == nullptr) return BOILEDEGG_RESEARCH_PV_RT_INVALID_ARGUMENT;
         for (std::uint32_t i = 0; i < frames; ++i) {
             if (!ensure_input_space()) return BOILEDEGG_RESEARCH_PV_RT_INTERNAL_ERROR;
-            const std::size_t slot = static_cast<std::size_t>(input_write_ % input_capacity_);
+            const std::size_t slot = ring_index(input_write_, input_capacity_);
             for (std::uint32_t ch = 0; ch < channels_; ++ch)
                 input_[static_cast<std::size_t>(ch) * input_capacity_ + slot] = input[ch][i];
             ++input_write_;
@@ -306,7 +307,7 @@ public:
         const std::uint64_t guard_limit = static_cast<std::uint64_t>(n_fft_) * 96U + target_pv_frames_ * 2U + 131072U;
         while ((latest_safe_position_ < timeline_target || pv_emitted_frames_ < target_pv_frames_) && guard < guard_limit) {
             if (!ensure_input_space()) return BOILEDEGG_RESEARCH_PV_RT_INTERNAL_ERROR;
-            const std::size_t slot = static_cast<std::size_t>(input_write_ % input_capacity_);
+            const std::size_t slot = ring_index(input_write_, input_capacity_);
             for (std::uint32_t ch = 0; ch < channels_; ++ch)
                 input_[static_cast<std::size_t>(ch) * input_capacity_ + slot] = 0.0F;
             ++input_write_;
@@ -330,11 +331,11 @@ public:
         if (!scheduled_ || flushed_) process_resampler(flushed_ && pv_emitted_frames_ == target_pv_frames_);
         const std::uint32_t count = static_cast<std::uint32_t>(std::min<std::uint64_t>(capacity, fifo_count_));
         for (std::uint32_t i = 0; i < count; ++i) {
-            const std::size_t slot = static_cast<std::size_t>((fifo_read_ + i) % fifo_capacity_);
+            const std::size_t slot = ring_index(fifo_read_ + i, fifo_capacity_);
             for (std::uint32_t ch = 0; ch < channels_; ++ch)
                 output[ch][i] = fifo_[static_cast<std::size_t>(ch) * fifo_capacity_ + slot];
         }
-        fifo_read_ = (fifo_read_ + count) % fifo_capacity_;
+        fifo_read_ = ring_index(fifo_read_ + count, fifo_capacity_);
         fifo_count_ -= count;
         if (!scheduled_ || flushed_) process_resampler(flushed_ && pv_emitted_frames_ == target_pv_frames_);
         return count;
@@ -602,7 +603,7 @@ private:
         for (std::uint32_t ch = 0; ch < channels_; ++ch) {
             auto* work = fft_work_.data() + static_cast<std::size_t>(ch) * n_fft_;
             for (std::uint32_t n = 0; n < n_fft_; ++n) {
-                const std::size_t slot = static_cast<std::size_t>((analysis_start_ + n) % input_capacity_);
+                const std::size_t slot = ring_index(analysis_start_ + n, input_capacity_);
                 work[n] = {input_[static_cast<std::size_t>(ch) * input_capacity_ + slot] * window_[n], 0.0F};
             }
             transform(work, false);
@@ -684,12 +685,12 @@ private:
             transform(work, true);
             for (std::uint32_t n = 0; n < n_fft_; ++n) {
                 const std::uint64_t absolute = synth_start + n;
-                const std::size_t slot = static_cast<std::size_t>(absolute % ola_capacity_);
+                const std::size_t slot = ring_index(absolute, ola_capacity_);
                 ola_[static_cast<std::size_t>(ch) * ola_capacity_ + slot] += work[n].real() * window_[n];
             }
         }
         for (std::uint32_t n = 0; n < n_fft_; ++n) {
-            const std::size_t slot = static_cast<std::size_t>((synth_start + n) % ola_capacity_);
+            const std::size_t slot = ring_index(synth_start + n, ola_capacity_);
             weight_[slot] += window_[n] * window_[n];
         }
         latest_safe_position_ = synth_start;
@@ -719,7 +720,7 @@ private:
         if (index < 0) return 0.0F;
         const auto u = static_cast<std::uint64_t>(index);
         if (u < pv_start_ || u >= pv_write_) return 0.0F;
-        return pv_fifo_[static_cast<std::size_t>(ch) * pv_capacity_ + static_cast<std::size_t>(u % pv_capacity_)];
+        return pv_fifo_[static_cast<std::size_t>(ch) * pv_capacity_ + ring_index(u, pv_capacity_)];
     }
     void pv_discard_before(std::uint64_t index) noexcept { pv_start_ = std::min(std::max(pv_start_, index), pv_write_); }
 
@@ -730,14 +731,14 @@ private:
         const std::uint64_t target = std::min(latest_safe_position_, timeline_limit);
         std::uint32_t budget=(scheduled_ && !flushed_)?8U:std::numeric_limits<std::uint32_t>::max();
         while (cleanup_position_ < target && budget--) {
-            const std::size_t slot = static_cast<std::size_t>(cleanup_position_ % ola_capacity_);
+            const std::size_t slot = ring_index(cleanup_position_, ola_capacity_);
             if (cleanup_position_ >= startup_crop_) {
                 if (pv_free() == 0U) {
                     process_resampler(false);
                     if (pv_free() == 0U) return;
                 }
                 const float norm = weight_[slot] > 1.0e-9F ? 1.0F / weight_[slot] : 0.0F;
-                const std::size_t pv_slot = static_cast<std::size_t>(pv_write_ % pv_capacity_);
+                const std::size_t pv_slot = ring_index(pv_write_, pv_capacity_);
                 for (std::uint32_t ch = 0; ch < channels_; ++ch)
                     pv_fifo_[static_cast<std::size_t>(ch) * pv_capacity_ + pv_slot] = ola_[static_cast<std::size_t>(ch) * ola_capacity_ + slot] * norm;
                 ++pv_write_;
@@ -752,10 +753,10 @@ private:
 
     void push_final_frame(const float* values) noexcept {
         if (fifo_count_ >= fifo_capacity_ || emitted_frames_ >= target_output_frames_) return;
-        const std::size_t slot = static_cast<std::size_t>(fifo_write_ % fifo_capacity_);
+        const std::size_t slot = ring_index(fifo_write_, fifo_capacity_);
         for (std::uint32_t ch = 0; ch < channels_; ++ch)
             fifo_[static_cast<std::size_t>(ch) * fifo_capacity_ + slot] = values[ch];
-        fifo_write_ = (fifo_write_ + 1U) % fifo_capacity_;
+        fifo_write_ = ring_index(fifo_write_ + 1U, fifo_capacity_);
         ++fifo_count_;
         ++emitted_frames_;
     }
@@ -768,13 +769,13 @@ private:
         std::uint32_t budget=(scheduled_ && !flushed_)?2U:std::numeric_limits<std::uint32_t>::max();
         if (std::abs(pitch_ratio_ - 1.0F) < 1.0e-7F) {
             while (pv_start_ < pv_write_ && emitted_frames_ < output_limit && fifo_count_ < fifo_capacity_ && budget--) {
-                const std::size_t source_slot = static_cast<std::size_t>(pv_start_ % pv_capacity_);
-                const std::size_t dst_slot = static_cast<std::size_t>(fifo_write_ % fifo_capacity_);
+                const std::size_t source_slot = ring_index(pv_start_, pv_capacity_);
+                const std::size_t dst_slot = ring_index(fifo_write_, fifo_capacity_);
                 for (std::uint32_t ch = 0; ch < channels_; ++ch)
                     fifo_[static_cast<std::size_t>(ch) * fifo_capacity_ + dst_slot] = pv_fifo_[static_cast<std::size_t>(ch) * pv_capacity_ + source_slot];
                 ++pv_start_;
                 resample_pos_ = static_cast<double>(pv_start_);
-                fifo_write_ = (fifo_write_ + 1U) % fifo_capacity_;
+                fifo_write_ = ring_index(fifo_write_ + 1U, fifo_capacity_);
                 ++fifo_count_;
                 ++emitted_frames_;
             }
