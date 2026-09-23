@@ -1,0 +1,103 @@
+name: pv-fft-four
+on:
+  push:
+    paths: ['src/experimental/pv/**', 'quality/pv_fft_four/**', 'quality/pv_fft_stage/**', 'quality/pv_ring/**', 'quality/formant_detail/**', 'quality/sdk_preview/**', 'docs/benchmarks/PV_FFT_FOUR*', '.github/workflows/pv-fft-four.yml']
+  pull_request:
+    paths: ['src/experimental/pv/**', 'quality/pv_fft_four/**', 'quality/pv_fft_stage/**', 'quality/pv_ring/**', 'quality/formant_detail/**', 'quality/sdk_preview/**', 'docs/benchmarks/PV_FFT_FOUR*', '.github/workflows/pv-fft-four.yml']
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: gcc20, cc: gcc, cxx: g++, std: 20, sanitize: none}
+          - {name: gcc23, cc: gcc, cxx: g++, std: 23, sanitize: none}
+          - {name: clang20, cc: clang, cxx: clang++, std: 20, sanitize: none}
+          - {name: clang23, cc: clang, cxx: clang++, std: 23, sanitize: none}
+          - {name: asan, cc: clang, cxx: clang++, std: 20, sanitize: address}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false, fetch-depth: 0}
+      - name: Actual immutable predecessor and candidate
+        run: |
+          mkdir -p "$RUNNER_TEMP/fft-before"
+          git archive 0d3feae8bb85b39f5058eecf8d77b6869c5cd476 | tar -x -C "$RUNNER_TEMP/fft-before"
+          cmake -S quality/pv_fft_four -B "$RUNNER_TEMP/fft" -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=${{ matrix.cc }} -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} -DCMAKE_CXX_STANDARD=${{ matrix.std }} -DBE_FFT_SANITIZER=${{ matrix.sanitize }} -DBE_FFT_REFERENCE_SOURCE="$RUNNER_TEMP/fft-before"
+          cmake --build "$RUNNER_TEMP/fft" -j2
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 python quality/audition/run_ctest.py --build "$RUNNER_TEMP/fft" --expected 9
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pv-fft-four-${{ matrix.name }}
+          path: ${{ runner.temp }}/fft/Testing
+          if-no-files-found: error
+  replay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env: {OPENBLAS_NUM_THREADS: '1', OMP_NUM_THREADS: '1'}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false, fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - name: Build predecessor and current public SDK independently
+        run: |
+          python -m pip install numpy==2.3.5 scipy==1.17.0 soundfile==0.13.1
+          mkdir -p "$RUNNER_TEMP/before" "$RUNNER_TEMP/evidence"
+          git archive 0d3feae8bb85b39f5058eecf8d77b6869c5cd476 | tar -x -C "$RUNNER_TEMP/before"
+          cmake -S "$RUNNER_TEMP/before" -B "$RUNNER_TEMP/old" -DCMAKE_BUILD_TYPE=Release -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON -DBOILED_EGG_BUILD_TESTS=OFF -DBOILED_EGG_BUILD_TOOLS=OFF -DBOILED_EGG_BUILD_BENCH=OFF
+          cmake --build "$RUNNER_TEMP/old" --target boiled_egg -j2
+          cmake -S quality/pv_ring -B "$RUNNER_TEMP/ring" -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/ring" -j2
+          python quality/audition/run_ctest.py --build "$RUNNER_TEMP/ring" --expected 13 | tee "$RUNNER_TEMP/evidence/public-tests.log"
+      - name: Eleven comparator and provenance controls, no skips
+        run: |
+          PYTHONPATH=quality/pv_fft_four:quality/pv_fft_stage:quality/pv_ring python - <<'PY' 2>&1 | tee "$RUNNER_TEMP/evidence/calibration.log"
+          import unittest
+          suite=unittest.defaultTestLoader.loadTestsFromNames(['test_experiment','test_compare'])
+          assert suite.countTestCases()==11
+          result=unittest.TextTestRunner(verbosity=2).run(suite)
+          assert result.testsRun==11 and not result.skipped and result.wasSuccessful()
+          PY
+      - name: Bind identities and execute the full existing streaming regression
+        run: |
+          out="$RUNNER_TEMP/evidence"
+          python quality/pv_fft_four/experiment.py prepare --runner "$RUNNER_TEMP/ring/detail/formant_render" --before "$RUNNER_TEMP/old/libboiled_egg.so" --after "$RUNNER_TEMP/ring/detail/sdk/libboiled_egg.so" --out "$out/plan" | tee "$out/PLAN_SHA256"
+          python quality/pv_fft_four/experiment.py run --plan "$out/plan/plan.json" --sha256 "$(cat "$out/PLAN_SHA256")" --mode quality --out "$out/quality"
+      - name: Read actual outputs and receipts
+        run: |
+          PYTHONPATH=quality/pv_fft_four python - <<'PY'
+          import json,os,pathlib,numpy as np
+          import experiment as e
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'evidence'
+          report=json.loads((root/'quality/summary.json').read_text())
+          assert e.replay.assess(report['rows'],'quality')['integrity_pass']
+          assert len(report['rows'])==192
+          for row in report['rows']:
+              assert e.replay.sha(row['output'])==row['pcm_sha256']
+              assert e.replay.sha(row['receipt'])==row['receipt_sha256']
+              data=np.fromfile(row['output'],dtype='<f4')
+              assert len(data)==2*row['rate'] and np.isfinite(data).all() and np.any(data)
+          (root/'readback.json').write_text(json.dumps(dict(audio=192,exact_pcm_pairs=96,scope='streaming regression; cooperative prefixes tested separately',hard_realtime_qualified=False)))
+          PY
+      - name: Preserve exact source and failures
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/evidence"
+          git rev-parse HEAD > "$RUNNER_TEMP/evidence/COMMIT.txt"
+          git rev-parse HEAD^{tree} > "$RUNNER_TEMP/evidence/TREE.txt"
+          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/evidence/source.tar.gz"
+          git ls-files -z | xargs -0 sha256sum > "$RUNNER_TEMP/evidence/SOURCE_SHA256SUMS"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pv-fft-four-replay
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: error

@@ -43,6 +43,13 @@ def run(args):
         fft_reference=fft_reference.resolve(strict=True)
         scope=lambda:fft_stage_scope.source_contract(base,donor,current,package,reference,formant_reference,ring_reference,fft_reference,host)
         files[str(Path(fft_stage_scope.__file__))]=a.sha(Path(fft_stage_scope.__file__))
+    four_reference=getattr(args,'fft_four_reference_source',None)
+    if four_reference is not None:
+        if fft_reference is None:raise ValueError('FFT-four scope requires first-stage predecessor')
+        import fft_four_scope
+        four_reference=four_reference.resolve(strict=True)
+        scope=lambda:fft_four_scope.source_contract(base,donor,current,package,reference,formant_reference,ring_reference,fft_reference,four_reference,host)
+        files[str(Path(fft_four_scope.__file__))]=a.sha(Path(fft_four_scope.__file__))
     checked=scope()
     args.output.mkdir(parents=True)
     (args.output/'plan.json').write_text(json.dumps(dict(files=files,sources=checked),indent=2)+'\n')
@@ -79,5 +86,6 @@ if __name__=='__main__':
     p.add_argument('--formant-reference-source',type=Path,help='Pinned post-duration source; exact three-file formant-option scope')
     p.add_argument('--ring-reference-source',type=Path,help='Pinned post-formant source; exact ring-address replacement scope')
     p.add_argument('--fft-stage-reference-source',type=Path,help='Pinned post-ring source; exact first-stage FFT edit')
+    p.add_argument('--fft-four-reference-source',type=Path,help='Pinned post-first-stage source; exact length-four FFT edit')
     r=run(p.parse_args())
     print(json.dumps({k:r[k] for k in ('legacy_pairs','preview_pairs','runtime_files','protected_files')}))
