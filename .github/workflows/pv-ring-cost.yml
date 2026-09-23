@@ -1,0 +1,99 @@
+name: pv-ring-cost
+on:
+  push:
+    paths: ['src/experimental/pv/**', 'quality/pv_ring/**', 'quality/formant_detail/**', 'quality/sdk_preview/**', 'docs/benchmarks/PV_RING_*', '.github/workflows/pv-ring-cost.yml']
+  pull_request:
+    paths: ['src/experimental/pv/**', 'quality/pv_ring/**', 'quality/formant_detail/**', 'quality/sdk_preview/**', 'docs/benchmarks/PV_RING_*', '.github/workflows/pv-ring-cost.yml']
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: gcc20, cc: gcc, cxx: g++, std: 20, sanitize: 'OFF'}
+          - {name: gcc23, cc: gcc, cxx: g++, std: 23, sanitize: 'OFF'}
+          - {name: clang20, cc: clang, cxx: clang++, std: 20, sanitize: 'OFF'}
+          - {name: clang23, cc: clang, cxx: clang++, std: 23, sanitize: 'OFF'}
+          - {name: asan, cc: clang, cxx: clang++, std: 20, sanitize: 'ON'}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Build exact ring and public formant controls
+        run: |
+          cmake -S quality/pv_ring -B "$RUNNER_TEMP/ring" -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=${{ matrix.cc }} -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} -DCMAKE_CXX_STANDARD=${{ matrix.std }} -DBOILED_EGG_SANITIZE=${{ matrix.sanitize }}
+          cmake --build "$RUNNER_TEMP/ring" -j2
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 python quality/audition/run_ctest.py --build "$RUNNER_TEMP/ring" --expected 13
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pv-ring-${{ matrix.name }}
+          path: ${{ runner.temp }}/ring/Testing
+          if-no-files-found: error
+  replay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env: {OPENBLAS_NUM_THREADS: '1', OMP_NUM_THREADS: '1'}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false, fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - name: Build immutable predecessor and candidate separately
+        run: |
+          python -m pip install numpy==2.3.5 scipy==1.17.0 soundfile==0.13.1
+          mkdir -p "$RUNNER_TEMP/before" "$RUNNER_TEMP/evidence"
+          git archive b972e0355ae656a74fb3fb1b1a99429f1668a5e4 | tar -x -C "$RUNNER_TEMP/before"
+          cmake -S "$RUNNER_TEMP/before" -B "$RUNNER_TEMP/old" -DCMAKE_BUILD_TYPE=Release -DBOILED_EGG_ENABLE_EXPERIMENTAL_SPECTRAL=ON -DBOILED_EGG_BUILD_TESTS=OFF -DBOILED_EGG_BUILD_TOOLS=OFF -DBOILED_EGG_BUILD_BENCH=OFF
+          cmake --build "$RUNNER_TEMP/old" --target boiled_egg -j2
+          cmake -S quality/pv_ring -B "$RUNNER_TEMP/ring" -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/ring" -j2
+      - name: Eight unique calibration methods, no skips
+        run: |
+          PYTHONPATH=quality/pv_ring python - <<'PY' 2>&1 | tee "$RUNNER_TEMP/evidence/calibration.log"
+          import unittest
+          suite=unittest.defaultTestLoader.loadTestsFromName('test_compare')
+          assert suite.countTestCases()==8
+          result=unittest.TextTestRunner(verbosity=2).run(suite)
+          assert result.testsRun==8 and not result.skipped and result.wasSuccessful()
+          PY
+      - name: Freeze identities and run all 192 outputs through the same executable
+        run: |
+          out="$RUNNER_TEMP/evidence"
+          python quality/pv_ring/compare.py prepare --runner "$RUNNER_TEMP/ring/detail/formant_render" --before "$RUNNER_TEMP/old/libboiled_egg.so" --after "$RUNNER_TEMP/ring/detail/sdk/libboiled_egg.so" --out "$out/plan" | tee "$out/PLAN_SHA256"
+          python quality/pv_ring/compare.py run --plan "$out/plan/plan.json" --sha256 "$(cat "$out/PLAN_SHA256")" --mode quality --out "$out/quality"
+      - name: Read and hash actual outputs and receipts
+        run: |
+          PYTHONPATH=quality/pv_ring python - <<'PY'
+          import json,os,pathlib,numpy as np
+          import compare as c
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'evidence'
+          report=json.loads((root/'quality/summary.json').read_text())
+          assert c.assess(report['rows'],'quality')['integrity_pass']
+          for row in report['rows']:
+              assert c.sha(row['output'])==row['pcm_sha256']
+              assert c.sha(row['receipt'])==row['receipt_sha256']
+              data=np.fromfile(row['output'],dtype='<f4')
+              assert len(data)==2*row['rate'] and np.isfinite(data).all() and np.any(data)
+          (root/'readback.json').write_text(json.dumps(dict(audio=192,exact_pcm_pairs=96,hard_realtime_qualified=False)))
+          PY
+      - name: Retain exact source and failures
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/evidence"
+          git rev-parse HEAD > "$RUNNER_TEMP/evidence/COMMIT.txt"
+          git rev-parse HEAD^{tree} > "$RUNNER_TEMP/evidence/TREE.txt"
+          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/evidence/source.tar.gz"
+          git ls-files -z | xargs -0 sha256sum > "$RUNNER_TEMP/evidence/SOURCE_SHA256SUMS"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pv-ring-replay
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: error
