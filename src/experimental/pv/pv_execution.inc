@@ -229,7 +229,7 @@ work_sequence frame_sequence() { for (;;) {
             for (std::uint32_t n = 0; n < n_fft_; ++n) {
                 if ((n & 31U) == 0U) co_yield true;
 
-                const std::size_t slot = static_cast<std::size_t>((analysis_start_ + n) % input_capacity_);
+                const std::size_t slot = ring_index(analysis_start_ + n, input_capacity_);
                 work[n] = {input_[static_cast<std::size_t>(ch) * input_capacity_ + slot] * window_[n], 0.0F};
             }
             fft_.start(fft_cursor_, work, false, simd_);
@@ -333,14 +333,14 @@ work_sequence frame_sequence() { for (;;) {
                 if ((n & 31U) == 0U) co_yield true;
 
                 const std::uint64_t absolute = synth_start + n;
-                const std::size_t slot = static_cast<std::size_t>(absolute % ola_capacity_);
+                const std::size_t slot = ring_index(absolute, ola_capacity_);
                 ola_[static_cast<std::size_t>(ch) * ola_capacity_ + slot] += work[n].real() * window_[n];
             }
         }
         for (std::uint32_t n = 0; n < n_fft_; ++n) {
             if ((n & 31U) == 0U) co_yield true;
 
-            const std::size_t slot = static_cast<std::size_t>((synth_start + n) % ola_capacity_);
+            const std::size_t slot = ring_index(synth_start + n, ola_capacity_);
             weight_[slot] += window_[n] * window_[n];
         }
         latest_safe_position_ = synth_start;
