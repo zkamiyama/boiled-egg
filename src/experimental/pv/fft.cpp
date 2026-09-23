@@ -93,6 +93,45 @@ bool fft_plan::advance(cursor& s,std::size_t budget) const noexcept {
                 if(s.length>size_){s.stage=s.inverse?2:3;s.position=0;}
                 continue;
             }
+            // A complete length-four block has two independent butterflies.
+            // Reuse the roots and bookkeeping across blocks without changing
+            // the two-lane SIMD grouping. Partial/odd budgets use the old path.
+            if(s.length==4 && s.column==0 && budget>=2) {
+                const auto blocks=std::min((size_-s.base)/4,budget/2);
+                auto* data=s.data+s.base;
+#if defined(__SSE2__) && !defined(BOILED_EGG_DISABLE_SIMD)
+                if(s.simd) {
+                    const auto sign_real=_mm_set_ps(0.F,-0.F,0.F,-0.F);
+                    const auto sign_imag=_mm_set_ps(-0.F,0.F,-0.F,0.F);
+                    auto w=_mm_loadu_ps(reinterpret_cast<const float*>(stage_roots_.data()+1));
+                    if(s.inverse)w=_mm_xor_ps(w,sign_imag);
+                    const auto swap=_mm_shuffle_ps(w,w,_MM_SHUFFLE(2,3,0,1));
+                    for(std::size_t k=0;k<blocks;++k,data+=4) {
+                        auto a=_mm_loadu_ps(reinterpret_cast<const float*>(data));
+                        auto b=_mm_loadu_ps(reinterpret_cast<const float*>(data+2));
+                        auto real=_mm_shuffle_ps(b,b,_MM_SHUFFLE(2,2,0,0));
+                        auto imag=_mm_shuffle_ps(b,b,_MM_SHUFFLE(3,3,1,1));
+                        auto product=_mm_add_ps(_mm_mul_ps(real,w),_mm_xor_ps(_mm_mul_ps(imag,swap),sign_real));
+                        _mm_storeu_ps(reinterpret_cast<float*>(data),_mm_add_ps(a,product));
+                        _mm_storeu_ps(reinterpret_cast<float*>(data+2),_mm_sub_ps(a,product));
+                    }
+                } else
+#endif
+                {
+                    const auto r0=s.inverse?std::conj(stage_roots_[1]):stage_roots_[1];
+                    const auto r1=s.inverse?std::conj(stage_roots_[2]):stage_roots_[2];
+                    for(std::size_t k=0;k<blocks;++k,data+=4) {
+                        const auto a=data[0],b=data[2]*r0;
+                        data[0]=a+b;data[2]=a-b;
+                        const auto c=data[1],d=data[3]*r1;
+                        data[1]=c+d;data[3]=c-d;
+                    }
+                }
+                budget-=2*blocks;s.base+=4*blocks;
+                if(s.base==size_){s.base=0;s.length=8;}
+                if(s.length>size_){s.stage=s.inverse?2:3;s.position=0;}
+                continue;
+            }
             const auto half=s.length/2;
             auto count=std::min({half-s.column,budget,(std::size_t)256});
             budget-=count;
